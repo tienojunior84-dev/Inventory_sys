@@ -1,0 +1,188 @@
+<?php
+// Downloads API - CSV, Excel, PDF exports
+require_once __DIR__ . '/../config/database.php';
+require_once __DIR__ . '/../config/constants.php';
+require_once __DIR__ . '/../includes/auth.php';
+require_once __DIR__ . '/../includes/functions.php';
+
+session_start();
+
+if (!isLoggedIn()) {
+    die('Unauthorized');
+}
+
+$type = $_GET['type'] ?? '';
+$format = $_GET['format'] ?? 'csv';
+$startDate = $_GET['start_date'] ?? date('Y-m-01');
+$endDate = $_GET['end_date'] ?? date('Y-m-d');
+$category = $_GET['category'] ?? '';
+
+$conn = getDBConnection();
+
+// Sales Download
+if ($type === 'sales') {
+    $query = "SELECT s.*, p.name as product_name, p.category, u.username 
+              FROM sales s
+              JOIN products p ON s.product_id = p.id
+              JOIN users u ON s.user_id = u.id
+              WHERE s.sale_date BETWEEN ? AND ?";
+    $params = [$startDate, $endDate];
+    $types = "ss";
+    
+    if ($category && in_array($category, CATEGORIES)) {
+        $query .= " AND p.category = ?";
+        $params[] = $category;
+        $types .= "s";
+    }
+    
+    $query .= " ORDER BY s.sale_date DESC, s.created_at DESC";
+    
+    $stmt = $conn->prepare($query);
+    if (count($params) > 2) {
+        $stmt->bind_param($types, ...$params);
+    } else {
+        $stmt->bind_param($types, $params[0], $params[1]);
+    }
+    $stmt->execute();
+    $data = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    
+    $filename = "sales_" . date('Y-m-d') . ".csv";
+    $headers = ['Date', 'Product Name', 'Category', 'Quantity', 'Unit Price', 'Total Amount', 'Recorded By'];
+    
+    exportToCSV($data, $filename, $headers, function($row) {
+        return [
+            formatDate($row['sale_date']),
+            $row['product_name'],
+            $row['category'],
+            $row['quantity'],
+            formatCurrency($row['unit_price']),
+            formatCurrency($row['total_amount']),
+            $row['username']
+        ];
+    });
+}
+
+// Stock In Download
+if ($type === 'stock_in') {
+    // Check if bulk columns exist
+    $checkColumn = $conn->query("SHOW COLUMNS FROM products LIKE 'bulk_unit_label'");
+    $hasBulkColumns = $checkColumn->num_rows > 0;
+    
+    if ($hasBulkColumns) {
+        $query = "SELECT sm.*, p.name as product_name, p.category, p.bulk_unit_label, u.username 
+                  FROM stock_movements sm
+                  JOIN products p ON sm.product_id = p.id
+                  JOIN users u ON sm.user_id = u.id
+                  WHERE sm.movement_type = 'in' AND DATE(sm.created_at) BETWEEN ? AND ?";
+    } else {
+        $query = "SELECT sm.*, p.name as product_name, p.category, NULL as bulk_unit_label, u.username 
+                  FROM stock_movements sm
+                  JOIN products p ON sm.product_id = p.id
+                  JOIN users u ON sm.user_id = u.id
+                  WHERE sm.movement_type = 'in' AND DATE(sm.created_at) BETWEEN ? AND ?";
+    }
+    $params = [$startDate, $endDate];
+    $types = "ss";
+    
+    if ($category && in_array($category, CATEGORIES)) {
+        $query .= " AND p.category = ?";
+        $params[] = $category;
+        $types .= "s";
+    }
+    
+    $query .= " ORDER BY sm.created_at DESC";
+    
+    $stmt = $conn->prepare($query);
+    if (count($params) > 2) {
+        $stmt->bind_param($types, ...$params);
+    } else {
+        $stmt->bind_param($types, $params[0], $params[1]);
+    }
+    $stmt->execute();
+    $data = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    
+    $filename = "stock_in_" . date('Y-m-d') . ".csv";
+    $headers = ['Date', 'Product Name', 'Category', 'Quantity', 'Bulk Quantity', 'Cost Per Unit', 'Total Cost', 'Receipt Number', 'Recorded By'];
+    
+    exportToCSV($data, $filename, $headers, function($row) {
+        $quantity = $row['bulk_quantity'] && $row['bulk_unit_label'] ? 
+            $row['bulk_quantity'] . ' ' . $row['bulk_unit_label'] . ' (' . $row['quantity'] . ' units)' : 
+            $row['quantity'] . ' units';
+        return [
+            formatDateTime($row['created_at']),
+            $row['product_name'],
+            $row['category'],
+            $quantity,
+            $row['bulk_quantity'] ? $row['bulk_quantity'] . ' ' . ($row['bulk_unit_label'] ?? '') : '',
+            formatCurrency($row['cost_per_unit']),
+            formatCurrency($row['total_cost']),
+            $row['receipt_number'] ?? '',
+            $row['username']
+        ];
+    });
+}
+
+// Products Download
+if ($type === 'products') {
+    $query = "SELECT * FROM products WHERE 1=1";
+    $params = [];
+    $types = "";
+    
+    if ($category && in_array($category, CATEGORIES)) {
+        $query .= " AND category = ?";
+        $params[] = $category;
+        $types .= "s";
+    }
+    
+    $query .= " ORDER BY category, name ASC";
+    
+    if (!empty($params)) {
+        $stmt = $conn->prepare($query);
+        $stmt->bind_param($types, ...$params);
+    } else {
+        $stmt = $conn->prepare($query);
+    }
+    $stmt->execute();
+    $data = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    
+    $filename = "products_" . date('Y-m-d') . ".csv";
+    $headers = ['Product Name', 'Category', 'Purchase Price', 'Selling Price', 'Current Stock', 'Reorder Level', 'Bulk Unit', 'Units Per Bulk'];
+    
+    exportToCSV($data, $filename, $headers, function($row) {
+        $status = ($row['reorder_level'] && $row['current_stock'] <= $row['reorder_level']) ? 'Low Stock' : 'In Stock';
+        return [
+            $row['name'],
+            $row['category'],
+            formatCurrency($row['purchase_price']),
+            formatCurrency($row['selling_price']),
+            $row['current_stock'],
+            $row['reorder_level'] ?? 'N/A',
+            $row['bulk_unit_label'] ?? 'N/A',
+            $row['units_per_bulk'] ?? 'N/A',
+            $status
+        ];
+    });
+}
+
+function exportToCSV($data, $filename, $headers, $callback) {
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+    
+    $output = fopen('php://output', 'w');
+    
+    // Add BOM for UTF-8
+    fprintf($output, chr(0xEF).chr(0xBB).chr(0xBF));
+    
+    // Write headers
+    fputcsv($output, $headers);
+    
+    // Write data
+    foreach ($data as $row) {
+        fputcsv($output, $callback($row));
+    }
+    
+    fclose($output);
+    exit();
+}
+
+die('Invalid download type');
