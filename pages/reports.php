@@ -23,7 +23,7 @@ foreach ($sales as $sale) {
         $salesByCategory[$cat] = ['revenue' => 0, 'profit' => 0, 'quantity' => 0];
     }
     $salesByCategory[$cat]['revenue'] += $sale['total_amount'];
-    $profit = ($sale['unit_price'] - $sale['purchase_price']) * $sale['quantity'];
+    $profit = ($sale['unit_price'] - ($sale['purchase_price'] ?? 0)) * $sale['quantity'];
     $salesByCategory[$cat]['profit'] += $profit;
     $salesByCategory[$cat]['quantity'] += $sale['quantity'];
 }
@@ -107,6 +107,12 @@ foreach (CATEGORIES as $category) {
                 </button>
             </div>
         </form>
+
+        <div class="mt-3">
+            <a class="btn btn-outline-secondary" target="_blank" href="/Inventory_sys/api/report_pdf.php?start_date=<?php echo urlencode($startDate); ?>&end_date=<?php echo urlencode($endDate); ?>&report_type=<?php echo urlencode($reportType); ?>">
+                <i class="bi bi-file-earmark-pdf"></i> Download PDF
+            </a>
+        </div>
     </div>
 </div>
 
@@ -333,7 +339,12 @@ foreach (CATEGORIES as $category) {
                                 <tr>
                                     <td><?php echo htmlspecialchars($product['name']); ?></td>
                                     <td><?php echo $product['current_stock']; ?></td>
-                                    <td><?php echo formatCurrency($product['current_stock'] * $product['purchase_price']); ?></td>
+                                    <td>
+                                        <?php
+                                        $unitCost = $product['individual_purchase_price'] ?? $product['purchase_price'] ?? 0;
+                                        echo formatCurrency($product['current_stock'] * $unitCost);
+                                        ?>
+                                    </td>
                                 </tr>
                                 <?php endforeach; ?>
                             </tbody>

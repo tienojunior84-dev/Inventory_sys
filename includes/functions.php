@@ -56,12 +56,23 @@ function getAllProducts($category = null) {
 // Calculate inventory value
 function calculateInventoryValue($category = null) {
     $conn = getDBConnection();
-    
+
+    $checkPricingColumn = $conn->query("SHOW COLUMNS FROM products LIKE 'individual_purchase_price'");
+    $hasPricingColumns = $checkPricingColumn && $checkPricingColumn->num_rows > 0;
+     
     if ($category && in_array($category, CATEGORIES)) {
-        $stmt = $conn->prepare("SELECT SUM(current_stock * purchase_price) as total_value FROM products WHERE category = ?");
+        if ($hasPricingColumns) {
+            $stmt = $conn->prepare("SELECT SUM(current_stock * COALESCE(individual_purchase_price, purchase_price)) as total_value FROM products WHERE category = ?");
+        } else {
+            $stmt = $conn->prepare("SELECT SUM(current_stock * purchase_price) as total_value FROM products WHERE category = ?");
+        }
         $stmt->bind_param("s", $category);
     } else {
-        $stmt = $conn->prepare("SELECT SUM(current_stock * purchase_price) as total_value FROM products");
+        if ($hasPricingColumns) {
+            $stmt = $conn->prepare("SELECT SUM(current_stock * COALESCE(individual_purchase_price, purchase_price)) as total_value FROM products");
+        } else {
+            $stmt = $conn->prepare("SELECT SUM(current_stock * purchase_price) as total_value FROM products");
+        }
     }
     
     $stmt->execute();
@@ -108,11 +119,23 @@ function getTodaySalesTotal() {
 // Get sales by date range
 function getSalesByDateRange($startDate, $endDate) {
     $conn = getDBConnection();
-    $stmt = $conn->prepare("SELECT s.*, p.name as product_name, p.category, p.purchase_price 
-                           FROM sales s 
-                           JOIN products p ON s.product_id = p.id 
-                           WHERE s.sale_date BETWEEN ? AND ? 
-                           ORDER BY s.sale_date DESC, s.created_at DESC");
+
+    $checkPricingColumn = $conn->query("SHOW COLUMNS FROM products LIKE 'individual_purchase_price'");
+    $hasPricingColumns = $checkPricingColumn && $checkPricingColumn->num_rows > 0;
+
+    if ($hasPricingColumns) {
+        $stmt = $conn->prepare("SELECT s.*, p.name as product_name, p.category, COALESCE(p.individual_purchase_price, p.purchase_price) as purchase_price 
+                               FROM sales s 
+                               JOIN products p ON s.product_id = p.id 
+                               WHERE s.sale_date BETWEEN ? AND ? 
+                               ORDER BY s.sale_date DESC, s.created_at DESC");
+    } else {
+        $stmt = $conn->prepare("SELECT s.*, p.name as product_name, p.category, p.purchase_price 
+                               FROM sales s 
+                               JOIN products p ON s.product_id = p.id 
+                               WHERE s.sale_date BETWEEN ? AND ? 
+                               ORDER BY s.sale_date DESC, s.created_at DESC");
+    }
     $stmt->bind_param("ss", $startDate, $endDate);
     $stmt->execute();
     $result = $stmt->get_result();
@@ -129,7 +152,7 @@ function getSalesByDateRange($startDate, $endDate) {
 function calculateProfit($sales) {
     $totalProfit = 0;
     foreach ($sales as $sale) {
-        $profit = ($sale['unit_price'] - $sale['purchase_price']) * $sale['quantity'];
+        $profit = ($sale['unit_price'] - ($sale['purchase_price'] ?? 0)) * $sale['quantity'];
         $totalProfit += $profit;
     }
     return $totalProfit;

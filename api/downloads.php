@@ -146,14 +146,15 @@ if ($type === 'products') {
     $data = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     
     $filename = "products_" . date('Y-m-d') . ".csv";
-    $headers = ['Product Name', 'Category', 'Purchase Price', 'Selling Price', 'Current Stock', 'Reorder Level', 'Bulk Unit', 'Units Per Bulk'];
+    $headers = ['Product Name', 'Category', 'Individual Purchase Price', 'Bulk Purchase Price', 'Selling Price', 'Current Stock', 'Reorder Level', 'Bulk Unit', 'Units Per Bulk'];
     
     exportToCSV($data, $filename, $headers, function($row) {
         $status = ($row['reorder_level'] && $row['current_stock'] <= $row['reorder_level']) ? 'Low Stock' : 'In Stock';
         return [
             $row['name'],
             $row['category'],
-            formatCurrency($row['purchase_price']),
+            formatCurrency($row['individual_purchase_price'] ?? $row['purchase_price']),
+            isset($row['bulk_purchase_price']) ? formatCurrency($row['bulk_purchase_price'] ?? 0) : '',
             formatCurrency($row['selling_price']),
             $row['current_stock'],
             $row['reorder_level'] ?? 'N/A',

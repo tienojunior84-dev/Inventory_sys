@@ -20,7 +20,9 @@ $columnsToAdd = [
     'products' => [
         'bulk_unit_type' => "VARCHAR(50) DEFAULT NULL COMMENT 'carton, crate, etc.'",
         'units_per_bulk' => "INT DEFAULT NULL COMMENT 'How many individual units in one bulk unit'",
-        'bulk_unit_label' => "VARCHAR(50) DEFAULT NULL COMMENT 'Display label: Carton, Crate, etc.'"
+        'bulk_unit_label' => "VARCHAR(50) DEFAULT NULL COMMENT 'Display label: Carton, Crate, etc.'",
+        'bulk_purchase_price' => "DECIMAL(10, 2) DEFAULT NULL COMMENT 'Typical cost when buying in bulk unit'",
+        'individual_purchase_price' => "DECIMAL(10, 2) DEFAULT NULL COMMENT 'Typical cost per individual unit'"
     ],
     'stock_movements' => [
         'bulk_quantity' => "DECIMAL(10, 2) DEFAULT NULL COMMENT 'Quantity in bulk units'",
@@ -45,6 +47,17 @@ foreach ($columnsToAdd as $table => $columns) {
         } else {
             $success[] = "Column `$columnName` already exists in table `$table`";
         }
+    }
+}
+
+// Migrate purchase_price -> individual_purchase_price if needed
+$checkIndividualPrice = $conn->query("SHOW COLUMNS FROM `products` LIKE 'individual_purchase_price'");
+if ($checkIndividualPrice && $checkIndividualPrice->num_rows > 0) {
+    $sql = "UPDATE `products` SET `individual_purchase_price` = `purchase_price` WHERE `individual_purchase_price` IS NULL";
+    if ($conn->query($sql)) {
+        $success[] = "Migrated existing purchase_price values into individual_purchase_price";
+    } else {
+        $errors[] = "Failed to migrate purchase_price into individual_purchase_price: " . $conn->error;
     }
 }
 

@@ -165,7 +165,7 @@ if ($lastReceiptId) {
                             <?php foreach ($products as $product): ?>
                                 <option value="<?php echo $product['id']; ?>" 
                                         data-stock="<?php echo $product['current_stock']; ?>"
-                                        data-price="<?php echo $product['purchase_price']; ?>"
+                                        data-price="<?php echo $product['individual_purchase_price'] ?? $product['purchase_price']; ?>"
                                         data-bulk-type="<?php echo htmlspecialchars($product['bulk_unit_type'] ?? ''); ?>"
                                         data-units-per-bulk="<?php echo $product['units_per_bulk'] ?? ''; ?>"
                                         data-bulk-label="<?php echo htmlspecialchars($product['bulk_unit_label'] ?? ''); ?>">

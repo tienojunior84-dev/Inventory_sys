@@ -13,7 +13,7 @@ A comprehensive inventory management system for tracking products across three c
 ### Product Management
 - Add, edit, and delete products
 - Three categories: Provisions, Wine, Beer
-- Track purchase price, selling price, stock levels
+- Track individual purchase price, bulk purchase price (optional), selling price, stock levels
 - Set reorder levels for low stock alerts
 
 ### Stock Management
