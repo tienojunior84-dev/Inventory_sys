@@ -13,7 +13,7 @@ $products = getAllProducts();
         <p class="text-muted">Record sales using manual entry, batch entry, or Excel upload</p>
     </div>
     <div class="col-md-4 text-end">
-        <a href="/Inventory_sys/api/downloads.php?type=sales&format=csv" class="btn btn-outline-primary">
+        <a href="/Inventory_sys/api/downloads.php?type=sales&format=xls" class="btn btn-outline-primary">
             <i class="bi bi-download"></i> Download Sales
         </a>
     </div>

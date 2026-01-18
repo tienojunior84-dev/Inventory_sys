@@ -233,7 +233,7 @@ $products = getAllProducts($categoryFilter ?: null);
         <h2><i class="bi bi-box"></i> Products</h2>
     </div>
     <div class="col-md-6 text-end">
-        <a href="/Inventory_sys/api/downloads.php?type=products&format=csv" class="btn btn-outline-primary me-2">
+        <a href="/Inventory_sys/api/downloads.php?type=products&format=xls" class="btn btn-outline-primary me-2">
             <i class="bi bi-download"></i> Download
         </a>
         <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addProductModal">

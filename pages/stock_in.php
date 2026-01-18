@@ -6,6 +6,59 @@ requireLogin();
 $conn = getDBConnection();
 $products = getAllProducts();
 
+// Receipt list date range
+$startDate = $_GET['start_date'] ?? date('Y-m-01');
+$endDate = $_GET['end_date'] ?? date('Y-m-d');
+
+$receiptMode = $_GET['receipt_mode'] ?? 'single';
+
+$activeReceiptId = $_SESSION['active_stock_receipt_id'] ?? null;
+$activeReceiptNumber = $_SESSION['active_stock_receipt_number'] ?? null;
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['receipt_action'])) {
+    $receiptAction = sanitize($_POST['receipt_action'] ?? '');
+
+    if ($receiptAction === 'start_receipt') {
+        $supplierName = sanitize($_POST['supplier_name'] ?? '');
+        $deliveryReference = sanitize($_POST['delivery_reference'] ?? '');
+
+        $userId = getCurrentUserId();
+        $receiptNumber = 'DEL-' . date('Ymd') . '-' . time();
+
+        $hasReceiptsTable = $conn->query("SHOW TABLES LIKE 'stock_receipts'");
+        if ($hasReceiptsTable && $hasReceiptsTable->num_rows > 0) {
+            $stmt = $conn->prepare("INSERT INTO stock_receipts (receipt_number, supplier_name, delivery_reference, user_id) VALUES (?, ?, ?, ?)");
+            $stmt->bind_param("sssi", $receiptNumber, $supplierName, $deliveryReference, $userId);
+            if ($stmt->execute()) {
+                $_SESSION['active_stock_receipt_id'] = $conn->insert_id;
+                $_SESSION['active_stock_receipt_number'] = $receiptNumber;
+                $_SESSION['success_message'] = 'Batch receipt started: ' . $receiptNumber;
+            } else {
+                $_SESSION['error_message'] = 'Failed to start receipt: ' . $conn->error;
+            }
+        } else {
+            $_SESSION['error_message'] = 'Receipt batching is not available. Please run database migration.';
+        }
+
+        header('Location: /Inventory_sys/pages/stock_in.php?start_date=' . urlencode($startDate) . '&end_date=' . urlencode($endDate) . '&receipt_mode=' . urlencode($receiptMode));
+        exit();
+    }
+
+    if ($receiptAction === 'finish_receipt' || $receiptAction === 'cancel_receipt') {
+        unset($_SESSION['active_stock_receipt_id']);
+        unset($_SESSION['active_stock_receipt_number']);
+
+        if ($receiptAction === 'finish_receipt') {
+            $_SESSION['success_message'] = 'Batch receipt finished.';
+        } else {
+            $_SESSION['success_message'] = 'Batch receipt canceled.';
+        }
+
+        header('Location: /Inventory_sys/pages/stock_in.php?start_date=' . urlencode($startDate) . '&end_date=' . urlencode($endDate) . '&receipt_mode=' . urlencode($receiptMode));
+        exit();
+    }
+}
+
 // Handle stock in
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $productId = intval($_POST['product_id'] ?? 0);
@@ -37,14 +90,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             
             // Handle bulk entry
-            if ($entryMode === 'bulk' && $product['bulk_unit_type'] && $product['units_per_bulk']) {
+            if ($entryMode === 'bulk' && !empty($product['units_per_bulk'])) {
                 // Calculate individual units from bulk
                 $quantity = intval($bulkQuantity * $product['units_per_bulk']);
                 $costPerUnit = $bulkCost / $product['units_per_bulk'];
             }
+
+            // Default cost per unit from product pricing when not provided
+            if ($entryMode !== 'bulk' && ($costPerUnit <= 0)) {
+                $costPerUnit = floatval($product['individual_purchase_price'] ?? $product['purchase_price'] ?? 0);
+            }
             
-            // Generate receipt number
-            $receiptNumber = 'REC-' . date('Ymd') . '-' . str_pad($productId, 4, '0', STR_PAD_LEFT) . '-' . time();
+            $receiptId = $_SESSION['active_stock_receipt_id'] ?? null;
+            $receiptNumber = $_SESSION['active_stock_receipt_number'] ?? null;
+            if (empty($receiptNumber)) {
+                $receiptNumber = 'REC-' . date('Ymd') . '-' . str_pad($productId, 4, '0', STR_PAD_LEFT) . '-' . time();
+            }
             
             // Calculate total cost
             $totalCost = $quantity * $costPerUnit;
@@ -63,9 +124,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $checkBulkColumn = $conn->query("SHOW COLUMNS FROM stock_movements LIKE 'bulk_quantity'");
             $hasBulkColumns = $checkBulkColumn->num_rows > 0;
             
+            $checkReceiptIdColumn = $conn->query("SHOW COLUMNS FROM stock_movements LIKE 'receipt_id'");
+            $hasReceiptId = $checkReceiptIdColumn && $checkReceiptIdColumn->num_rows > 0;
+
             if ($hasBulkColumns) {
-                $stmt = $conn->prepare("INSERT INTO stock_movements (product_id, movement_type, quantity, cost_per_unit, total_cost, bulk_quantity, bulk_cost, receipt_number, notes, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-                $stmt->bind_param("isiddddssi", $productId, $movementType, $quantity, $costPerUnit, $totalCost, $bulkQuantity, $bulkCost, $receiptNumber, $notes, $userId);
+                if ($hasReceiptId) {
+                    $stmt = $conn->prepare("INSERT INTO stock_movements (product_id, movement_type, quantity, cost_per_unit, total_cost, bulk_quantity, bulk_cost, receipt_number, receipt_id, notes, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    $stmt->bind_param("isiddddsisi", $productId, $movementType, $quantity, $costPerUnit, $totalCost, $bulkQuantity, $bulkCost, $receiptNumber, $receiptId, $notes, $userId);
+                } else {
+                    $stmt = $conn->prepare("INSERT INTO stock_movements (product_id, movement_type, quantity, cost_per_unit, total_cost, bulk_quantity, bulk_cost, receipt_number, notes, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    $stmt->bind_param("isiddddssi", $productId, $movementType, $quantity, $costPerUnit, $totalCost, $bulkQuantity, $bulkCost, $receiptNumber, $notes, $userId);
+                }
             } else {
                 $stmt = $conn->prepare("INSERT INTO stock_movements (product_id, movement_type, quantity, cost_per_unit, total_cost, notes, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)");
                 $stmt->bind_param("isiddsi", $productId, $movementType, $quantity, $costPerUnit, $totalCost, $notes, $userId);
@@ -81,9 +150,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 "{$quantity} units";
             
             $_SESSION['success_message'] = "Stock received successfully. {$displayQuantity} added to {$product['name']}.";
-            $_SESSION['last_receipt_id'] = $movementId;
-            $_SESSION['last_receipt_number'] = $receiptNumber;
-            header('Location: /Inventory_sys/pages/stock_in.php');
+            if (!empty($receiptId)) {
+                $_SESSION['last_receipt_id'] = null;
+                $_SESSION['last_receipt_number'] = $receiptNumber;
+            } else {
+                $_SESSION['last_receipt_id'] = $movementId;
+                $_SESSION['last_receipt_number'] = $receiptNumber;
+            }
+            header('Location: /Inventory_sys/pages/stock_in.php?start_date=' . urlencode($startDate) . '&end_date=' . urlencode($endDate) . '&receipt_mode=' . urlencode($receiptMode));
             exit();
         } catch (Exception $e) {
             $conn->rollback();
@@ -99,21 +173,57 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $checkColumn = $conn->query("SHOW COLUMNS FROM products LIKE 'bulk_unit_label'");
 $hasBulkColumns = $checkColumn->num_rows > 0;
 
+$checkReceiptsTable = $conn->query("SHOW TABLES LIKE 'stock_receipts'");
+$hasReceiptsTable = $checkReceiptsTable && $checkReceiptsTable->num_rows > 0;
+
 if ($hasBulkColumns) {
-    $stmt = $conn->prepare("SELECT sm.*, p.name as product_name, p.category, p.bulk_unit_label, p.units_per_bulk
-                           FROM stock_movements sm 
-                           JOIN products p ON sm.product_id = p.id 
-                           WHERE sm.movement_type = 'in'
-                           ORDER BY sm.created_at DESC 
-                           LIMIT 20");
+    if ($hasReceiptsTable) {
+        $stmt = $conn->prepare("SELECT sm.*, p.name as product_name, p.category, p.bulk_unit_label, p.units_per_bulk,
+                               COALESCE(sr.receipt_number, sm.receipt_number) as display_receipt_number,
+                               sr.supplier_name, sr.delivery_reference
+                               FROM stock_movements sm
+                               JOIN products p ON sm.product_id = p.id
+                               LEFT JOIN stock_receipts sr ON sm.receipt_id = sr.id
+                               WHERE sm.movement_type = 'in'
+                               AND DATE(sm.created_at) BETWEEN ? AND ?
+                               ORDER BY sm.created_at DESC
+                               LIMIT 20");
+    } else {
+        $stmt = $conn->prepare("SELECT sm.*, p.name as product_name, p.category, p.bulk_unit_label, p.units_per_bulk,
+                               sm.receipt_number as display_receipt_number,
+                               NULL as supplier_name, NULL as delivery_reference
+                               FROM stock_movements sm
+                               JOIN products p ON sm.product_id = p.id
+                               WHERE sm.movement_type = 'in'
+                               AND DATE(sm.created_at) BETWEEN ? AND ?
+                               ORDER BY sm.created_at DESC
+                               LIMIT 20");
+    }
 } else {
-    $stmt = $conn->prepare("SELECT sm.*, p.name as product_name, p.category, NULL as bulk_unit_label, NULL as units_per_bulk
-                           FROM stock_movements sm 
-                           JOIN products p ON sm.product_id = p.id 
-                           WHERE sm.movement_type = 'in'
-                           ORDER BY sm.created_at DESC 
-                           LIMIT 20");
+    if ($hasReceiptsTable) {
+        $stmt = $conn->prepare("SELECT sm.*, p.name as product_name, p.category, NULL as bulk_unit_label, NULL as units_per_bulk,
+                               COALESCE(sr.receipt_number, sm.receipt_number) as display_receipt_number,
+                               sr.supplier_name, sr.delivery_reference
+                               FROM stock_movements sm
+                               JOIN products p ON sm.product_id = p.id
+                               LEFT JOIN stock_receipts sr ON sm.receipt_id = sr.id
+                               WHERE sm.movement_type = 'in'
+                               AND DATE(sm.created_at) BETWEEN ? AND ?
+                               ORDER BY sm.created_at DESC
+                               LIMIT 20");
+    } else {
+        $stmt = $conn->prepare("SELECT sm.*, p.name as product_name, p.category, NULL as bulk_unit_label, NULL as units_per_bulk,
+                               sm.receipt_number as display_receipt_number,
+                               NULL as supplier_name, NULL as delivery_reference
+                               FROM stock_movements sm
+                               JOIN products p ON sm.product_id = p.id
+                               WHERE sm.movement_type = 'in'
+                               AND DATE(sm.created_at) BETWEEN ? AND ?
+                               ORDER BY sm.created_at DESC
+                               LIMIT 20");
+    }
 }
+$stmt->bind_param("ss", $startDate, $endDate);
 $stmt->execute();
 $recentMovements = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
 
@@ -132,9 +242,29 @@ if ($lastReceiptId) {
         <p class="text-muted">Receive new inventory and update stock levels</p>
     </div>
     <div class="col-md-4 text-end">
-        <a href="/Inventory_sys/api/downloads.php?type=stock_in&format=csv" class="btn btn-outline-primary">
+        <a href="/Inventory_sys/api/downloads.php?type=stock_in&format=xls&start_date=<?php echo urlencode($startDate); ?>&end_date=<?php echo urlencode($endDate); ?>" class="btn btn-outline-primary">
             <i class="bi bi-download"></i> Download Records
         </a>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="GET" class="row g-3">
+            <div class="col-md-4">
+                <label class="form-label">Start Date</label>
+                <input type="date" class="form-control" name="start_date" value="<?php echo htmlspecialchars($startDate); ?>" required>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">End Date</label>
+                <input type="date" class="form-control" name="end_date" value="<?php echo htmlspecialchars($endDate); ?>" required>
+            </div>
+            <div class="col-md-4 d-flex align-items-end">
+                <button type="submit" class="btn btn-primary w-100">
+                    <i class="bi bi-funnel"></i> Filter Receipts
+                </button>
+            </div>
+        </form>
     </div>
 </div>
 
@@ -145,12 +275,91 @@ if ($lastReceiptId) {
                 <h5 class="mb-0">Receive Stock</h5>
             </div>
             <div class="card-body">
+                <div class="mb-3">
+                    <label class="form-label">Receipt Type</label>
+                    <form method="GET" class="row g-2">
+                        <input type="hidden" name="start_date" value="<?php echo htmlspecialchars($startDate); ?>">
+                        <input type="hidden" name="end_date" value="<?php echo htmlspecialchars($endDate); ?>">
+                        <div class="col-12">
+                            <div class="btn-group w-100" role="group">
+                                <input class="btn-check" type="radio" name="receipt_mode" id="receipt_mode_single" value="single" <?php echo $receiptMode === 'single' ? 'checked' : ''; ?> onchange="this.form.submit()">
+                                <label class="btn btn-outline-primary" for="receipt_mode_single">Single</label>
+
+                                <input class="btn-check" type="radio" name="receipt_mode" id="receipt_mode_multiple" value="multiple" <?php echo $receiptMode === 'multiple' ? 'checked' : ''; ?> onchange="this.form.submit()">
+                                <label class="btn btn-outline-primary" for="receipt_mode_multiple">Multiple</label>
+                            </div>
+                            <small class="form-text text-muted">Single = one stock entry gives one receipt. Multiple = add several items then download one receipt.</small>
+                        </div>
+                    </form>
+                </div>
+
+                <?php if ($receiptMode === 'multiple'): ?>
+                    <?php if ($activeReceiptId && $activeReceiptNumber): ?>
+                        <div class="alert alert-warning mb-3">
+                            <h5><i class="bi bi-receipt"></i> Active Batch Receipt</h5>
+                            <p class="mb-2">Receipt Number: <strong><?php echo htmlspecialchars($activeReceiptNumber); ?></strong></p>
+                            <div class="d-flex gap-2">
+                                <a href="/Inventory_sys/api/receipts.php?receipt_id=<?php echo intval($activeReceiptId); ?>" class="btn btn-outline-primary btn-sm" target="_blank">
+                                    <i class="bi bi-receipt"></i> Preview Receipt
+                                </a>
+                                <form method="POST" class="m-0">
+                                    <input type="hidden" name="receipt_action" value="finish_receipt">
+                                    <button type="submit" class="btn btn-success btn-sm">Finish Receipt</button>
+                                </form>
+                                <form method="POST" class="m-0">
+                                    <input type="hidden" name="receipt_action" value="cancel_receipt">
+                                    <button type="submit" class="btn btn-outline-danger btn-sm">Cancel</button>
+                                </form>
+                            </div>
+                        </div>
+                    <?php else: ?>
+                        <div class="card mb-3">
+                            <div class="card-body">
+                                <h6 class="mb-3">Start Batch Receipt (Optional)</h6>
+                                <form method="POST" class="row g-2">
+                                    <input type="hidden" name="receipt_action" value="start_receipt">
+                                    <div class="col-md-6">
+                                        <input type="text" class="form-control" name="supplier_name" placeholder="Supplier name (optional)">
+                                    </div>
+                                    <div class="col-md-6">
+                                        <input type="text" class="form-control" name="delivery_reference" placeholder="Delivery reference (optional)">
+                                    </div>
+                                    <div class="col-12">
+                                        <button type="submit" class="btn btn-outline-primary w-100">Start Receipt</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    <?php endif; ?>
+                <?php else: ?>
+                    <?php if ($activeReceiptId && $activeReceiptNumber): ?>
+                        <div class="alert alert-warning mb-3">
+                            <h5 class="mb-1">A batch receipt is still active</h5>
+                            <div class="small text-muted mb-2">Receipt: <?php echo htmlspecialchars($activeReceiptNumber); ?></div>
+                            <form method="POST" class="m-0">
+                                <input type="hidden" name="receipt_action" value="cancel_receipt">
+                                <button type="submit" class="btn btn-outline-danger btn-sm">End Active Batch Receipt</button>
+                            </form>
+                        </div>
+                    <?php endif; ?>
+                <?php endif; ?>
+
                 <?php if ($lastReceiptId): ?>
                     <div class="alert alert-success mb-3">
                         <h5><i class="bi bi-check-circle"></i> Stock Received Successfully!</h5>
                         <p class="mb-2">Receipt Number: <strong><?php echo htmlspecialchars($lastReceiptNumber); ?></strong></p>
                         <a href="/Inventory_sys/api/receipts.php?id=<?php echo $lastReceiptId; ?>" class="btn btn-success btn-sm" target="_blank">
                             <i class="bi bi-download"></i> Download Receipt
+                        </a>
+                    </div>
+                <?php endif; ?>
+
+                <?php if (!$lastReceiptId && !empty($lastReceiptNumber) && $receiptMode === 'multiple' && $activeReceiptId): ?>
+                    <div class="alert alert-info mb-3">
+                        <h6 class="mb-1">Item added to batch receipt</h6>
+                        <div class="small text-muted mb-2">Receipt: <?php echo htmlspecialchars($lastReceiptNumber); ?></div>
+                        <a href="/Inventory_sys/api/receipts.php?receipt_id=<?php echo intval($activeReceiptId); ?>" class="btn btn-outline-primary btn-sm" target="_blank">
+                            <i class="bi bi-receipt"></i> Preview Receipt
                         </a>
                     </div>
                 <?php endif; ?>
@@ -165,8 +374,8 @@ if ($lastReceiptId) {
                             <?php foreach ($products as $product): ?>
                                 <option value="<?php echo $product['id']; ?>" 
                                         data-stock="<?php echo $product['current_stock']; ?>"
-                                        data-price="<?php echo $product['individual_purchase_price'] ?? $product['purchase_price']; ?>"
-                                        data-bulk-type="<?php echo htmlspecialchars($product['bulk_unit_type'] ?? ''); ?>"
+                                        data-individual-price="<?php echo $product['individual_purchase_price'] ?? $product['purchase_price']; ?>"
+                                        data-bulk-price="<?php echo $product['bulk_purchase_price'] ?? ''; ?>"
                                         data-units-per-bulk="<?php echo $product['units_per_bulk'] ?? ''; ?>"
                                         data-bulk-label="<?php echo htmlspecialchars($product['bulk_unit_label'] ?? ''); ?>">
                                     <?php echo htmlspecialchars($product['name']); ?> 
@@ -175,6 +384,13 @@ if ($lastReceiptId) {
                                 </option>
                             <?php endforeach; ?>
                         </select>
+                    </div>
+
+                    <div class="mb-3" id="product_pricing_box" style="display:none;">
+                        <div class="alert alert-secondary mb-0">
+                            <div><strong>Individual Purchase Price (Cost per unit):</strong> <span id="display_individual_price">0</span> XAF</div>
+                            <div><strong>Bulk Purchase Price:</strong> <span id="display_bulk_price">N/A</span></div>
+                        </div>
                     </div>
                     
                     <!-- Entry Mode Toggle -->
@@ -200,7 +416,7 @@ if ($lastReceiptId) {
                         <div class="mb-3">
                             <label class="form-label required-field">Cost Per Unit</label>
                             <input type="number" step="0.01" class="form-control" name="cost_per_unit" min="0" id="cost_input">
-                            <small class="form-text text-muted">Purchase cost per individual unit</small>
+                            <small class="form-text text-muted">Defaults to the product's Individual Purchase Price (you can edit if needed)</small>
                         </div>
                     </div>
                     
@@ -218,7 +434,7 @@ if ($lastReceiptId) {
                         <div class="mb-3">
                             <label class="form-label required-field">Cost Per Bulk Unit</label>
                             <input type="number" step="0.01" class="form-control" name="bulk_cost" min="0" id="bulk_cost_input">
-                            <small class="form-text text-muted">Purchase cost per bulk unit</small>
+                            <small class="form-text text-muted">Defaults to the product's Bulk Purchase Price (you can edit if needed)</small>
                         </div>
                         
                         <div class="alert alert-info">
@@ -262,17 +478,36 @@ if ($lastReceiptId) {
                             <thead>
                                 <tr>
                                     <th>Date</th>
+                                    <th>Receipt</th>
                                     <th>Product</th>
+                                    <th>Mode</th>
                                     <th>Quantity</th>
                                     <th>Total Cost</th>
                                     <th>Receipt</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                <?php foreach ($recentMovements as $movement): ?>
+                                <?php
+                                $lastDay = null;
+                                foreach ($recentMovements as $movement):
+                                    $dayKey = date('Y-m-d', strtotime($movement['created_at']));
+                                    if ($lastDay !== $dayKey):
+                                        $lastDay = $dayKey;
+                                ?>
+                                <tr class="table-light">
+                                    <td colspan="7"><strong><?php echo formatDate($movement['created_at']); ?></strong></td>
+                                </tr>
+                                <?php endif; ?>
                                 <tr>
                                     <td><?php echo formatDateTime($movement['created_at']); ?></td>
+                                    <td><span class="badge bg-secondary"><?php echo htmlspecialchars($movement['display_receipt_number'] ?? $movement['receipt_number'] ?? 'N/A'); ?></span></td>
                                     <td><?php echo htmlspecialchars($movement['product_name']); ?></td>
+                                    <td>
+                                        <?php
+                                        $isBulk = !empty($movement['bulk_quantity']) && !empty($movement['bulk_unit_label']);
+                                        echo $isBulk ? '<span class="badge bg-info">Bulk</span>' : '<span class="badge bg-primary">Individual</span>';
+                                        ?>
+                                    </td>
                                     <td>
                                         <?php 
                                         if ($movement['bulk_quantity'] && $movement['bulk_unit_label']) {
@@ -285,9 +520,15 @@ if ($lastReceiptId) {
                                     <td><?php echo formatCurrency($movement['total_cost']); ?></td>
                                     <td>
                                         <?php if ($movement['receipt_number']): ?>
-                                            <a href="/Inventory_sys/api/receipts.php?id=<?php echo $movement['id']; ?>" class="btn btn-sm btn-outline-primary" target="_blank" title="Download Receipt">
-                                                <i class="bi bi-receipt"></i>
-                                            </a>
+                                            <?php if (!empty($movement['receipt_id'])): ?>
+                                                <a href="/Inventory_sys/api/receipts.php?receipt_id=<?php echo intval($movement['receipt_id']); ?>" class="btn btn-sm btn-outline-primary" target="_blank" title="Download Receipt">
+                                                    <i class="bi bi-receipt"></i>
+                                                </a>
+                                            <?php else: ?>
+                                                <a href="/Inventory_sys/api/receipts.php?id=<?php echo $movement['id']; ?>" class="btn btn-sm btn-outline-primary" target="_blank" title="Download Receipt">
+                                                    <i class="bi bi-receipt"></i>
+                                                </a>
+                                            <?php endif; ?>
                                         <?php endif; ?>
                                     </td>
                                 </tr>
@@ -320,6 +561,10 @@ document.addEventListener('DOMContentLoaded', function() {
     const calculatedUnits = document.getElementById('calculated_units');
     const calculatedUnitCost = document.getElementById('calculated_unit_cost');
     const totalCostSpan = document.getElementById('total_cost');
+
+    const productPricingBox = document.getElementById('product_pricing_box');
+    const displayIndividualPrice = document.getElementById('display_individual_price');
+    const displayBulkPrice = document.getElementById('display_bulk_price');
     
     let currentProduct = null;
     
@@ -355,14 +600,31 @@ document.addEventListener('DOMContentLoaded', function() {
         const selectedOption = this.options[this.selectedIndex];
         if (selectedOption.value) {
             currentProduct = {
-                bulkType: selectedOption.getAttribute('data-bulk-type'),
                 unitsPerBulk: selectedOption.getAttribute('data-units-per-bulk'),
                 bulkLabel: selectedOption.getAttribute('data-bulk-label'),
-                defaultPrice: selectedOption.getAttribute('data-price')
+                individualPrice: selectedOption.getAttribute('data-individual-price'),
+                bulkPrice: selectedOption.getAttribute('data-bulk-price')
             };
+
+            if (productPricingBox) {
+                productPricingBox.style.display = 'block';
+            }
+
+            const indPriceNum = parseFloat(currentProduct.individualPrice) || 0;
+            if (displayIndividualPrice) {
+                displayIndividualPrice.textContent = indPriceNum.toLocaleString('en-US', { maximumFractionDigits: 0 });
+            }
+            const bulkPriceNum = parseFloat(currentProduct.bulkPrice);
+            if (displayBulkPrice) {
+                if (!isNaN(bulkPriceNum) && bulkPriceNum > 0 && currentProduct.bulkLabel) {
+                    displayBulkPrice.textContent = bulkPriceNum.toLocaleString('en-US', { maximumFractionDigits: 0 }) + ' XAF per ' + currentProduct.bulkLabel;
+                } else {
+                    displayBulkPrice.textContent = 'N/A';
+                }
+            }
             
             // Show/hide entry mode toggle based on bulk unit availability
-            if (currentProduct.bulkType && currentProduct.unitsPerBulk) {
+            if (currentProduct.unitsPerBulk && currentProduct.bulkLabel) {
                 entryModeToggle.style.display = 'block';
                 bulkUnitDisplay.textContent = currentProduct.bulkLabel || 'units';
                 bulkConversionInfo.textContent = `1 ${currentProduct.bulkLabel} = ${currentProduct.unitsPerBulk} units`;
@@ -373,14 +635,26 @@ document.addEventListener('DOMContentLoaded', function() {
                 bulkEntry.style.display = 'none';
             }
             
-            // Set default price
-            if (currentProduct.defaultPrice) {
-                costInput.value = parseFloat(currentProduct.defaultPrice).toLocaleString('en-US', {maximumFractionDigits: 0});
-                calculateTotal();
+            // Set default unit cost (individual purchase price)
+            if (!isNaN(indPriceNum) && indPriceNum > 0) {
+                costInput.value = indPriceNum.toFixed(2);
             }
+
+            // Set default bulk cost (bulk purchase price)
+            if (!isNaN(bulkPriceNum) && bulkPriceNum > 0) {
+                bulkCostInput.value = bulkPriceNum.toFixed(2);
+            } else {
+                bulkCostInput.value = '';
+            }
+
+            calculateTotal();
+            calculateBulkTotal();
         } else {
             entryModeToggle.style.display = 'none';
             currentProduct = null;
+            if (productPricingBox) {
+                productPricingBox.style.display = 'none';
+            }
         }
     });
     

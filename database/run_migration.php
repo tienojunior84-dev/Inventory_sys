@@ -74,6 +74,64 @@ if ($checkIndex->num_rows == 0) {
     $success[] = "Index idx_receipt_number already exists";
 }
 
+// Create stock_receipts table if it doesn't exist
+$createReceiptsTable = "CREATE TABLE IF NOT EXISTS stock_receipts (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    receipt_number VARCHAR(50) NOT NULL,
+    supplier_name VARCHAR(255) DEFAULT NULL,
+    delivery_reference VARCHAR(100) DEFAULT NULL,
+    user_id INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_stock_receipts_receipt_number (receipt_number),
+    INDEX idx_created_at (created_at),
+    INDEX idx_user_id (user_id),
+    CONSTRAINT fk_stock_receipts_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+
+if ($conn->query($createReceiptsTable)) {
+    $success[] = "Ensured table stock_receipts exists";
+} else {
+    $errors[] = "Failed to create/verify stock_receipts table: " . $conn->error;
+}
+
+// Add receipt_id to stock_movements if missing
+$checkReceiptIdCol = $conn->query("SHOW COLUMNS FROM stock_movements LIKE 'receipt_id'");
+if ($checkReceiptIdCol->num_rows == 0) {
+    $sql = "ALTER TABLE stock_movements ADD COLUMN receipt_id INT DEFAULT NULL";
+    if ($conn->query($sql)) {
+        $success[] = "Added column receipt_id to stock_movements";
+    } else {
+        $errors[] = "Failed to add receipt_id to stock_movements: " . $conn->error;
+    }
+} else {
+    $success[] = "Column receipt_id already exists in stock_movements";
+}
+
+// Add index and FK for receipt_id if possible
+$checkReceiptIdIndex = $conn->query("SHOW INDEX FROM stock_movements WHERE Key_name = 'idx_receipt_id'");
+if ($checkReceiptIdIndex->num_rows == 0) {
+    $sql = "ALTER TABLE stock_movements ADD INDEX idx_receipt_id (receipt_id)";
+    if ($conn->query($sql)) {
+        $success[] = "Added index idx_receipt_id to stock_movements";
+    } else {
+        $errors[] = "Failed to add idx_receipt_id: " . $conn->error;
+    }
+} else {
+    $success[] = "Index idx_receipt_id already exists";
+}
+
+$checkFk = $conn->query("SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'stock_movements' AND COLUMN_NAME = 'receipt_id' AND REFERENCED_TABLE_NAME = 'stock_receipts'");
+if ($checkFk && $checkFk->num_rows == 0) {
+    $sql = "ALTER TABLE stock_movements ADD CONSTRAINT fk_stock_movements_receipt FOREIGN KEY (receipt_id) REFERENCES stock_receipts(id) ON DELETE SET NULL";
+    if ($conn->query($sql)) {
+        $success[] = "Added foreign key fk_stock_movements_receipt";
+    } else {
+        $errors[] = "Failed to add fk_stock_movements_receipt: " . $conn->error;
+    }
+} else {
+    $success[] = "Foreign key for receipt_id already exists";
+}
+
 // Display results
 echo "<div style='padding: 20px; background: #f0f0f0; border-radius: 8px; margin: 20px 0;'>";
 echo "<h3>Migration Results:</h3>";

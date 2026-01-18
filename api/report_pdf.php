@@ -4,7 +4,9 @@ require_once __DIR__ . '/../config/constants.php';
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
 
-session_start();
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
 if (!isLoggedIn()) {
     die('Unauthorized');
@@ -75,10 +77,11 @@ foreach (CATEGORIES as $category) {
     $inventoryByCategory[$category] = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
 }
 
-header('Content-Type: text/html; charset=utf-8');
-
 $title = $reportType === 'inventory' ? 'Inventory Report' : 'Sales Report';
 $generatedAt = date('Y-m-d H:i:s');
+$filename = ($reportType === 'inventory' ? 'inventory_report_' : 'sales_report_') . date('Y-m-d') . '.pdf';
+
+ob_start();
 ?>
 <!DOCTYPE html>
 <html>
@@ -412,3 +415,28 @@ $generatedAt = date('Y-m-d H:i:s');
     <?php endif; ?>
 </body>
 </html>
+<?php
+$html = ob_get_clean();
+
+$autoloadPath = __DIR__ . '/../vendor/autoload.php';
+if (file_exists($autoloadPath)) {
+    require_once $autoloadPath;
+
+    if (class_exists('Dompdf\\Dompdf')) {
+        $options = new Dompdf\Options();
+        $options->set('isRemoteEnabled', false);
+        $options->set('isHtml5ParserEnabled', true);
+        $dompdf = new Dompdf\Dompdf($options);
+        $dompdf->setPaper('A4', 'portrait');
+        $dompdf->loadHtml($html, 'UTF-8');
+        $dompdf->render();
+
+        header('Content-Type: application/pdf');
+        header('Content-Disposition: attachment; filename="' . $filename . '"');
+        echo $dompdf->output();
+        exit;
+    }
+}
+
+header('Content-Type: text/html; charset=utf-8');
+echo $html;

@@ -5,15 +5,18 @@ require_once __DIR__ . '/../config/constants.php';
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
 
-session_start();
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
 if (!isLoggedIn()) {
     die('Unauthorized');
 }
 
 $movementId = intval($_GET['id'] ?? 0);
+$receiptId = intval($_GET['receipt_id'] ?? 0);
 
-if ($movementId <= 0) {
+if ($movementId <= 0 && $receiptId <= 0) {
     die('Invalid receipt ID');
 }
 
@@ -23,38 +26,89 @@ $conn = getDBConnection();
 $checkColumn = $conn->query("SHOW COLUMNS FROM products LIKE 'bulk_unit_label'");
 $hasBulkColumns = $checkColumn->num_rows > 0;
 
-if ($hasBulkColumns) {
-    $stmt = $conn->prepare("SELECT sm.*, p.name as product_name, p.category, p.bulk_unit_label, p.units_per_bulk, u.username
-                            FROM stock_movements sm
-                            JOIN products p ON sm.product_id = p.id
-                            JOIN users u ON sm.user_id = u.id
-                            WHERE sm.id = ? AND sm.movement_type = 'in'");
-} else {
-    $stmt = $conn->prepare("SELECT sm.*, p.name as product_name, p.category, NULL as bulk_unit_label, NULL as units_per_bulk, u.username
-                            FROM stock_movements sm
-                            JOIN products p ON sm.product_id = p.id
-                            JOIN users u ON sm.user_id = u.id
-                            WHERE sm.id = ? AND sm.movement_type = 'in'");
-}
-$stmt->bind_param("i", $movementId);
-$stmt->execute();
-$result = $stmt->get_result();
-$movement = $result->fetch_assoc();
-
-if (!$movement) {
-    die('Receipt not found');
+$hasReceiptsTable = false;
+$checkReceiptsTable = $conn->query("SHOW TABLES LIKE 'stock_receipts'");
+if ($checkReceiptsTable && $checkReceiptsTable->num_rows > 0) {
+    $hasReceiptsTable = true;
 }
 
-// Generate PDF receipt using simple HTML to PDF approach
-// For now, we'll use a simple approach - in production, use TCPDF or similar
+$receipt = null;
+$items = [];
 
-header('Content-Type: text/html; charset=utf-8');
+if ($receiptId > 0 && $hasReceiptsTable) {
+    $stmt = $conn->prepare("SELECT sr.*, u.username
+                            FROM stock_receipts sr
+                            JOIN users u ON sr.user_id = u.id
+                            WHERE sr.id = ?");
+    $stmt->bind_param("i", $receiptId);
+    $stmt->execute();
+    $receipt = $stmt->get_result()->fetch_assoc();
+
+    if (!$receipt) {
+        die('Receipt not found');
+    }
+
+    if ($hasBulkColumns) {
+        $stmt = $conn->prepare("SELECT sm.*, p.name as product_name, p.category, p.bulk_unit_label, p.units_per_bulk
+                                FROM stock_movements sm
+                                JOIN products p ON sm.product_id = p.id
+                                WHERE sm.receipt_id = ? AND sm.movement_type = 'in'
+                                ORDER BY sm.created_at ASC");
+    } else {
+        $stmt = $conn->prepare("SELECT sm.*, p.name as product_name, p.category, NULL as bulk_unit_label, NULL as units_per_bulk
+                                FROM stock_movements sm
+                                JOIN products p ON sm.product_id = p.id
+                                WHERE sm.receipt_id = ? AND sm.movement_type = 'in'
+                                ORDER BY sm.created_at ASC");
+    }
+    $stmt->bind_param("i", $receiptId);
+    $stmt->execute();
+    $items = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+
+    if (empty($items)) {
+        die('No receipt items found');
+    }
+}
+
+if ($movementId > 0) {
+    if ($hasBulkColumns) {
+        $stmt = $conn->prepare("SELECT sm.*, p.name as product_name, p.category, p.bulk_unit_label, p.units_per_bulk, u.username
+                                FROM stock_movements sm
+                                JOIN products p ON sm.product_id = p.id
+                                JOIN users u ON sm.user_id = u.id
+                                WHERE sm.id = ? AND sm.movement_type = 'in'");
+    } else {
+        $stmt = $conn->prepare("SELECT sm.*, p.name as product_name, p.category, NULL as bulk_unit_label, NULL as units_per_bulk, u.username
+                                FROM stock_movements sm
+                                JOIN products p ON sm.product_id = p.id
+                                JOIN users u ON sm.user_id = u.id
+                                WHERE sm.id = ? AND sm.movement_type = 'in'");
+    }
+    $stmt->bind_param("i", $movementId);
+    $stmt->execute();
+    $movement = $stmt->get_result()->fetch_assoc();
+
+    if (!$movement) {
+        die('Receipt not found');
+    }
+
+    $receipt = [
+        'receipt_number' => $movement['receipt_number'],
+        'supplier_name' => null,
+        'delivery_reference' => null,
+        'created_at' => $movement['created_at'],
+        'username' => $movement['username']
+    ];
+    $items = [$movement];
+}
+
+ob_start();
 ?>
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>Stock Receipt - <?php echo htmlspecialchars($movement['receipt_number']); ?></title>
+    <title>Stock Receipt - <?php echo htmlspecialchars($receipt['receipt_number']); ?></title>
     <style>
         @media print {
             body { margin: 0; }
@@ -178,10 +232,6 @@ header('Content-Type: text/html; charset=utf-8');
     </style>
 </head>
 <body>
-    <div class="no-print" style="text-align: center; margin-bottom: 20px;">
-        <button onclick="window.print()" class="btn-print">Print / Save as PDF</button>
-    </div>
-    
     <div class="header">
         <h1>C&C Building Shop</h1>
         <p>Stock Receipt</p>
@@ -190,14 +240,19 @@ header('Content-Type: text/html; charset=utf-8');
     <div class="receipt-info">
         <div class="info-section">
             <h3>Receipt Information</h3>
-            <p><strong>Receipt Number:</strong> <?php echo htmlspecialchars($movement['receipt_number']); ?></p>
-            <p><strong>Date:</strong> <?php echo formatDateTime($movement['created_at']); ?></p>
-            <p><strong>Recorded By:</strong> <?php echo htmlspecialchars($movement['username']); ?></p>
+            <p><strong>Receipt Number:</strong> <?php echo htmlspecialchars($receipt['receipt_number']); ?></p>
+            <p><strong>Date:</strong> <?php echo formatDateTime($receipt['created_at']); ?></p>
+            <?php if (!empty($receipt['supplier_name'])): ?>
+                <p><strong>Supplier:</strong> <?php echo htmlspecialchars($receipt['supplier_name']); ?></p>
+            <?php endif; ?>
+            <?php if (!empty($receipt['delivery_reference'])): ?>
+                <p><strong>Delivery Ref:</strong> <?php echo htmlspecialchars($receipt['delivery_reference']); ?></p>
+            <?php endif; ?>
+            <p><strong>Recorded By:</strong> <?php echo htmlspecialchars($receipt['username']); ?></p>
         </div>
         <div class="info-section">
-            <h3>Product Details</h3>
-            <p><strong>Product:</strong> <?php echo htmlspecialchars($movement['product_name']); ?></p>
-            <p><strong>Category:</strong> <?php echo htmlspecialchars($movement['category']); ?></p>
+            <h3>Receipt Summary</h3>
+            <p><strong>Items:</strong> <?php echo count($items); ?></p>
         </div>
     </div>
     
@@ -211,55 +266,70 @@ header('Content-Type: text/html; charset=utf-8');
             </tr>
         </thead>
         <tbody>
-            <tr>
-                <td>
-                    <?php echo htmlspecialchars($movement['product_name']); ?>
-                    <?php if ($movement['bulk_quantity'] && $movement['bulk_unit_label']): ?>
-                        <br><small style="color: #666;">
-                            <?php echo $movement['bulk_quantity']; ?> <?php echo htmlspecialchars($movement['bulk_unit_label']); ?> 
-                            × <?php echo $movement['units_per_bulk']; ?> units = <?php echo $movement['quantity']; ?> units
-                        </small>
-                    <?php endif; ?>
-                </td>
-                <td style="text-align: right;">
-                    <?php 
-                    if ($movement['bulk_quantity'] && $movement['bulk_unit_label']) {
-                        echo $movement['bulk_quantity'] . ' ' . htmlspecialchars($movement['bulk_unit_label']) . '<br>';
-                        echo '<small style="color: #666;">(' . $movement['quantity'] . ' units)</small>';
-                    } else {
-                        echo $movement['quantity'] . ' units';
-                    }
-                    ?>
-                </td>
-                <td style="text-align: right;">
-                    <?php 
-                    if ($movement['bulk_quantity'] && $movement['bulk_cost']) {
-                        echo formatCurrency($movement['bulk_cost']) . ' / ' . htmlspecialchars($movement['bulk_unit_label']) . '<br>';
-                        echo '<small style="color: #666;">(' . formatCurrency($movement['cost_per_unit']) . ' / unit)</small>';
-                    } else {
-                        echo formatCurrency($movement['cost_per_unit']) . ' / unit';
-                    }
-                    ?>
-                </td>
-                <td style="text-align: right; font-weight: 600;">
-                    <?php echo formatCurrency($movement['total_cost']); ?>
-                </td>
-            </tr>
+            <?php $grandTotal = 0; ?>
+            <?php foreach ($items as $item): ?>
+                <?php $grandTotal += floatval($item['total_cost'] ?? 0); ?>
+                <tr>
+                    <td>
+                        <?php echo htmlspecialchars($item['product_name']); ?>
+                        <?php if ($item['bulk_quantity'] && $item['bulk_unit_label']): ?>
+                            <br><small style="color: #666;">
+                                <?php echo $item['bulk_quantity']; ?> <?php echo htmlspecialchars($item['bulk_unit_label']); ?>
+                                <?php if (!empty($item['units_per_bulk'])): ?>
+                                    × <?php echo $item['units_per_bulk']; ?> units = <?php echo $item['quantity']; ?> units
+                                <?php endif; ?>
+                            </small>
+                        <?php endif; ?>
+                    </td>
+                    <td style="text-align: right;">
+                        <?php
+                        if ($item['bulk_quantity'] && $item['bulk_unit_label']) {
+                            echo $item['bulk_quantity'] . ' ' . htmlspecialchars($item['bulk_unit_label']) . '<br>';
+                            echo '<small style="color: #666;">(' . $item['quantity'] . ' units)</small>';
+                        } else {
+                            echo $item['quantity'] . ' units';
+                        }
+                        ?>
+                    </td>
+                    <td style="text-align: right;">
+                        <?php
+                        if ($item['bulk_quantity'] && $item['bulk_cost']) {
+                            echo formatCurrency($item['bulk_cost']) . ' / ' . htmlspecialchars($item['bulk_unit_label']) . '<br>';
+                            echo '<small style="color: #666;">(' . formatCurrency($item['cost_per_unit']) . ' / unit)</small>';
+                        } else {
+                            echo formatCurrency($item['cost_per_unit']) . ' / unit';
+                        }
+                        ?>
+                    </td>
+                    <td style="text-align: right; font-weight: 600;">
+                        <?php echo formatCurrency($item['total_cost']); ?>
+                    </td>
+                </tr>
+            <?php endforeach; ?>
         </tbody>
     </table>
     
     <div class="total-section">
         <div class="total-row">
             <div class="total-label">Total Cost:</div>
-            <div class="total-value"><?php echo formatCurrency($movement['total_cost']); ?></div>
+            <div class="total-value"><?php echo formatCurrency($grandTotal); ?></div>
         </div>
     </div>
     
-    <?php if ($movement['notes']): ?>
-    <div style="margin-top: 30px; padding: 15px; background: #f8f9fa; border-radius: 8px;">
-        <strong>Notes:</strong><br>
-        <?php echo nl2br(htmlspecialchars($movement['notes'])); ?>
-    </div>
+    <?php
+    $notesToShow = null;
+    foreach ($items as $item) {
+        if (!empty($item['notes'])) {
+            $notesToShow = $item['notes'];
+            break;
+        }
+    }
+    ?>
+    <?php if ($notesToShow): ?>
+        <div style="margin-top: 30px; padding: 15px; background: #f8f9fa; border-radius: 8px;">
+            <strong>Notes:</strong><br>
+            <?php echo nl2br(htmlspecialchars($notesToShow)); ?>
+        </div>
     <?php endif; ?>
     
     <div class="signature-section">
@@ -277,3 +347,30 @@ header('Content-Type: text/html; charset=utf-8');
     </div>
 </body>
 </html>
+<?php
+$html = ob_get_clean();
+
+$autoloadPath = __DIR__ . '/../vendor/autoload.php';
+if (file_exists($autoloadPath)) {
+    require_once $autoloadPath;
+
+    if (class_exists('Dompdf\\Dompdf')) {
+        $options = new Dompdf\Options();
+        $options->set('isRemoteEnabled', false);
+        $options->set('isHtml5ParserEnabled', true);
+
+        $dompdf = new Dompdf\Dompdf($options);
+        $dompdf->setPaper('A4', 'portrait');
+        $dompdf->loadHtml($html, 'UTF-8');
+        $dompdf->render();
+
+        $filename = 'receipt_' . preg_replace('/[^A-Za-z0-9\-_.]/', '_', (string)$receipt['receipt_number']) . '.pdf';
+        header('Content-Type: application/pdf');
+        header('Content-Disposition: attachment; filename="' . $filename . '"');
+        echo $dompdf->output();
+        exit;
+    }
+}
+
+header('Content-Type: text/html; charset=utf-8');
+echo $html;
