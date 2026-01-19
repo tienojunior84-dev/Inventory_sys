@@ -4,9 +4,17 @@ document.addEventListener('DOMContentLoaded', function() {
     // Manual entry calculations
     const manualProduct = document.getElementById('manual_product');
     const manualQuantity = document.getElementById('manual_quantity');
+    const manualBulkQuantity = document.getElementById('manual_bulk_quantity');
     const manualUnitPrice = document.getElementById('manual_unit_price');
     const manualStockDisplay = document.getElementById('manual_stock_display');
     const manualAmountDisplay = document.getElementById('manual_amount_display');
+    const manualModeIndividual = document.getElementById('manual_mode_individual');
+    const manualModeBulk = document.getElementById('manual_mode_bulk');
+    const manualQtyUnitsGroup = document.getElementById('manual_qty_units_group');
+    const manualQtyBulkGroup = document.getElementById('manual_qty_bulk_group');
+    const manualBulkLabel = document.getElementById('manual_bulk_label');
+    const manualBulkConversion = document.getElementById('manual_bulk_conversion');
+    const manualBulkHint = document.getElementById('manual_bulk_hint');
     
     if (manualProduct) {
         manualProduct.addEventListener('change', function() {
@@ -16,6 +24,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 const stock = selectedOption.getAttribute('data-stock') || '0';
                 manualStockDisplay.value = stock + ' units available';
                 manualUnitPrice.value = price.toLocaleString('en-US', {maximumFractionDigits: 0, useGrouping: false});
+                updateManualModeUI();
                 calculateManualAmount();
             } else {
                 manualStockDisplay.value = 'Select a product';
@@ -25,19 +34,91 @@ document.addEventListener('DOMContentLoaded', function() {
         });
         
         manualQuantity.addEventListener('input', calculateManualAmount);
+        if (manualBulkQuantity) {
+            manualBulkQuantity.addEventListener('input', calculateManualAmount);
+        }
         if (manualUnitPrice) {
             manualUnitPrice.addEventListener('input', calculateManualAmount);
+        }
+
+        if (manualModeIndividual) {
+            manualModeIndividual.addEventListener('change', function() {
+                updateManualModeUI();
+                calculateManualAmount();
+            });
+        }
+        if (manualModeBulk) {
+            manualModeBulk.addEventListener('change', function() {
+                updateManualModeUI();
+                calculateManualAmount();
+            });
+        }
+
+        function updateManualModeUI() {
+            const selectedOption = manualProduct.options[manualProduct.selectedIndex];
+            const unitsPerBulk = parseFloat(selectedOption?.getAttribute('data-units-per-bulk')) || 0;
+            const bulkLabel = selectedOption?.getAttribute('data-bulk-label') || 'Bulk';
+            const isBulk = manualModeBulk && manualModeBulk.checked;
+
+            if (manualQtyUnitsGroup && manualQtyBulkGroup) {
+                manualQtyUnitsGroup.style.display = isBulk ? 'none' : 'block';
+                manualQtyBulkGroup.style.display = isBulk ? 'block' : 'none';
+            }
+
+            if (manualQuantity) {
+                manualQuantity.required = !isBulk;
+                if (isBulk) {
+                    manualQuantity.value = '';
+                }
+            }
+
+            if (manualBulkQuantity) {
+                manualBulkQuantity.required = !!isBulk;
+                if (!isBulk) {
+                    manualBulkQuantity.value = '';
+                }
+            }
+
+            if (manualBulkHint) {
+                manualBulkHint.style.display = isBulk ? 'block' : 'none';
+            }
+
+            if (manualBulkLabel) {
+                manualBulkLabel.textContent = bulkLabel || 'Bulk';
+            }
+
+            if (manualBulkConversion) {
+                if (isBulk && unitsPerBulk > 0) {
+                    manualBulkConversion.textContent = '1 ' + (bulkLabel || 'Bulk') + ' = ' + unitsPerBulk + ' units';
+                } else if (isBulk && unitsPerBulk <= 0) {
+                    manualBulkConversion.textContent = 'This product has no Units Per Bulk set. Bulk mode may not work.';
+                } else {
+                    manualBulkConversion.textContent = '';
+                }
+            }
         }
         
         function calculateManualAmount() {
             const selectedOption = manualProduct.options[manualProduct.selectedIndex];
             if (selectedOption.value && manualUnitPrice) {
                 const price = parseFloat(manualUnitPrice.value.replace(/,/g, '')) || 0;
-                const quantity = parseFloat(manualQuantity.value) || 0;
-                const amount = price * quantity;
+                const isBulk = manualModeBulk && manualModeBulk.checked;
+                const unitsPerBulk = parseFloat(selectedOption.getAttribute('data-units-per-bulk')) || 0;
+                let quantityUnits = 0;
+
+                if (isBulk) {
+                    const bulkQty = parseFloat(manualBulkQuantity?.value) || 0;
+                    quantityUnits = unitsPerBulk > 0 ? (bulkQty * unitsPerBulk) : 0;
+                } else {
+                    quantityUnits = parseFloat(manualQuantity.value) || 0;
+                }
+
+                const amount = price * quantityUnits;
                 manualAmountDisplay.value = amount.toLocaleString('en-US', {maximumFractionDigits: 0}) + ' XAF';
             }
         }
+
+        updateManualModeUI();
     }
     
     // Batch entry
@@ -62,7 +143,10 @@ document.addEventListener('DOMContentLoaded', function() {
     
     function attachBatchRowListeners(row) {
         const productSelect = row.querySelector('.batch-product');
+        const modeSelect = row.querySelector('.batch-mode');
         const quantityInput = row.querySelector('.batch-quantity');
+        const bulkQuantityHidden = row.querySelector('.batch-bulk-quantity');
+        const bulkInfo = row.querySelector('.batch-bulk-info');
         const priceInput = row.querySelector('.batch-price');
         const amountInput = row.querySelector('.batch-amount');
         const removeBtn = row.querySelector('.remove-row');
@@ -71,8 +155,28 @@ document.addEventListener('DOMContentLoaded', function() {
             const selectedOption = productSelect.options[productSelect.selectedIndex];
             if (selectedOption && selectedOption.value && priceInput) {
                 const price = parseFloat(priceInput.value.replace(/,/g, '')) || 0;
-                const quantity = parseFloat(quantityInput.value) || 0;
-                const amount = price * quantity;
+                const mode = modeSelect ? modeSelect.value : 'individual';
+                const unitsPerBulk = parseFloat(selectedOption.getAttribute('data-units-per-bulk')) || 0;
+                const bulkLabel = selectedOption.getAttribute('data-bulk-label') || 'Bulk';
+
+                let quantityUnits = parseFloat(quantityInput.value) || 0;
+                if (mode === 'bulk') {
+                    const bulkQty = parseFloat(quantityInput.value) || 0;
+                    quantityUnits = unitsPerBulk > 0 ? (bulkQty * unitsPerBulk) : 0;
+                    if (bulkQuantityHidden) bulkQuantityHidden.value = bulkQty;
+                    if (bulkInfo) {
+                        bulkInfo.style.display = 'block';
+                        bulkInfo.textContent = (bulkQty || 0) + ' ' + bulkLabel + ' = ' + (quantityUnits || 0) + ' units';
+                    }
+                } else {
+                    if (bulkQuantityHidden) bulkQuantityHidden.value = '';
+                    if (bulkInfo) {
+                        bulkInfo.style.display = 'none';
+                        bulkInfo.textContent = '';
+                    }
+                }
+
+                const amount = price * quantityUnits;
                 amountInput.value = amount.toLocaleString('en-US', {maximumFractionDigits: 0}) + ' XAF';
             } else {
                 amountInput.value = '';
@@ -88,6 +192,10 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             calculateRowAmount();
         });
+
+        if (modeSelect) {
+            modeSelect.addEventListener('change', calculateRowAmount);
+        }
         quantityInput.addEventListener('input', calculateRowAmount);
         if (priceInput) {
             priceInput.addEventListener('input', calculateRowAmount);

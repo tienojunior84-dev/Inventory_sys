@@ -67,6 +67,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $costPerUnit = floatval($_POST['cost_per_unit'] ?? 0);
     $bulkQuantity = !empty($_POST['bulk_quantity']) ? floatval($_POST['bulk_quantity']) : null;
     $bulkCost = !empty($_POST['bulk_cost']) ? floatval($_POST['bulk_cost']) : null;
+    $receivedByName = sanitize($_POST['received_by_name'] ?? '');
     $notes = sanitize($_POST['notes'] ?? '');
     
     $errors = [];
@@ -127,17 +128,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $checkReceiptIdColumn = $conn->query("SHOW COLUMNS FROM stock_movements LIKE 'receipt_id'");
             $hasReceiptId = $checkReceiptIdColumn && $checkReceiptIdColumn->num_rows > 0;
 
+            $checkReceivedByColumn = $conn->query("SHOW COLUMNS FROM stock_movements LIKE 'received_by_name'");
+            $hasReceivedBy = $checkReceivedByColumn && $checkReceivedByColumn->num_rows > 0;
+
+            $checkStockReceiptsReceivedBy = $conn->query("SHOW TABLES LIKE 'stock_receipts'");
+            $hasReceiptsTableLocal = $checkStockReceiptsReceivedBy && $checkStockReceiptsReceivedBy->num_rows > 0;
+            if (!empty($receiptId) && $hasReceiptsTableLocal && $receivedByName !== '') {
+                $checkCol = $conn->query("SHOW COLUMNS FROM stock_receipts LIKE 'received_by_name'");
+                if ($checkCol && $checkCol->num_rows > 0) {
+                    $stmt = $conn->prepare("UPDATE stock_receipts SET received_by_name = COALESCE(NULLIF(received_by_name, ''), ?) WHERE id = ?");
+                    $stmt->bind_param("si", $receivedByName, $receiptId);
+                    $stmt->execute();
+                }
+            }
+
             if ($hasBulkColumns) {
                 if ($hasReceiptId) {
-                    $stmt = $conn->prepare("INSERT INTO stock_movements (product_id, movement_type, quantity, cost_per_unit, total_cost, bulk_quantity, bulk_cost, receipt_number, receipt_id, notes, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-                    $stmt->bind_param("isiddddsisi", $productId, $movementType, $quantity, $costPerUnit, $totalCost, $bulkQuantity, $bulkCost, $receiptNumber, $receiptId, $notes, $userId);
+                    if ($hasReceivedBy) {
+                        $stmt = $conn->prepare("INSERT INTO stock_movements (product_id, movement_type, quantity, cost_per_unit, total_cost, bulk_quantity, bulk_cost, receipt_number, receipt_id, received_by_name, notes, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                        $stmt->bind_param("isiddddssissi", $productId, $movementType, $quantity, $costPerUnit, $totalCost, $bulkQuantity, $bulkCost, $receiptNumber, $receiptId, $receivedByName, $notes, $userId);
+                    } else {
+                        $stmt = $conn->prepare("INSERT INTO stock_movements (product_id, movement_type, quantity, cost_per_unit, total_cost, bulk_quantity, bulk_cost, receipt_number, receipt_id, notes, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                        $stmt->bind_param("isiddddsisi", $productId, $movementType, $quantity, $costPerUnit, $totalCost, $bulkQuantity, $bulkCost, $receiptNumber, $receiptId, $notes, $userId);
+                    }
                 } else {
-                    $stmt = $conn->prepare("INSERT INTO stock_movements (product_id, movement_type, quantity, cost_per_unit, total_cost, bulk_quantity, bulk_cost, receipt_number, notes, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-                    $stmt->bind_param("isiddddssi", $productId, $movementType, $quantity, $costPerUnit, $totalCost, $bulkQuantity, $bulkCost, $receiptNumber, $notes, $userId);
+                    if ($hasReceivedBy) {
+                        $stmt = $conn->prepare("INSERT INTO stock_movements (product_id, movement_type, quantity, cost_per_unit, total_cost, bulk_quantity, bulk_cost, receipt_number, received_by_name, notes, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                        $stmt->bind_param("isiddddsssi", $productId, $movementType, $quantity, $costPerUnit, $totalCost, $bulkQuantity, $bulkCost, $receiptNumber, $receivedByName, $notes, $userId);
+                    } else {
+                        $stmt = $conn->prepare("INSERT INTO stock_movements (product_id, movement_type, quantity, cost_per_unit, total_cost, bulk_quantity, bulk_cost, receipt_number, notes, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                        $stmt->bind_param("isiddddssi", $productId, $movementType, $quantity, $costPerUnit, $totalCost, $bulkQuantity, $bulkCost, $receiptNumber, $notes, $userId);
+                    }
                 }
             } else {
-                $stmt = $conn->prepare("INSERT INTO stock_movements (product_id, movement_type, quantity, cost_per_unit, total_cost, notes, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)");
-                $stmt->bind_param("isiddsi", $productId, $movementType, $quantity, $costPerUnit, $totalCost, $notes, $userId);
+                if ($hasReceivedBy) {
+                    $stmt = $conn->prepare("INSERT INTO stock_movements (product_id, movement_type, quantity, cost_per_unit, total_cost, received_by_name, notes, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+                    $stmt->bind_param("isiddssi", $productId, $movementType, $quantity, $costPerUnit, $totalCost, $receivedByName, $notes, $userId);
+                } else {
+                    $stmt = $conn->prepare("INSERT INTO stock_movements (product_id, movement_type, quantity, cost_per_unit, total_cost, notes, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)");
+                    $stmt->bind_param("isiddsi", $productId, $movementType, $quantity, $costPerUnit, $totalCost, $notes, $userId);
+                }
             }
             $stmt->execute();
             $movementId = $conn->insert_id;
@@ -443,6 +473,11 @@ if ($lastReceiptId) {
                         </div>
                     </div>
                     
+                    <div class="mb-3">
+                        <label class="form-label">Received By (Optional)</label>
+                        <input type="text" class="form-control" name="received_by_name" placeholder="Name of person who received the stock">
+                    </div>
+
                     <div class="mb-3">
                         <label class="form-label">Notes (Optional)</label>
                         <textarea class="form-control" name="notes" rows="2"></textarea>

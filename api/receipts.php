@@ -48,6 +48,9 @@ if ($receiptId > 0 && $hasReceiptsTable) {
         die('Receipt not found');
     }
 
+    $checkMovementReceivedBy = $conn->query("SHOW COLUMNS FROM stock_movements LIKE 'received_by_name'");
+    $hasMovementReceivedBy = $checkMovementReceivedBy && $checkMovementReceivedBy->num_rows > 0;
+
     if ($hasBulkColumns) {
         $stmt = $conn->prepare("SELECT sm.*, p.name as product_name, p.category, p.bulk_unit_label, p.units_per_bulk
                                 FROM stock_movements sm
@@ -96,6 +99,7 @@ if ($movementId > 0) {
         'receipt_number' => $movement['receipt_number'],
         'supplier_name' => null,
         'delivery_reference' => null,
+        'received_by_name' => $movement['received_by_name'] ?? null,
         'created_at' => $movement['created_at'],
         'username' => $movement['username']
     ];
@@ -248,7 +252,20 @@ ob_start();
             <?php if (!empty($receipt['delivery_reference'])): ?>
                 <p><strong>Delivery Ref:</strong> <?php echo htmlspecialchars($receipt['delivery_reference']); ?></p>
             <?php endif; ?>
-            <p><strong>Recorded By:</strong> <?php echo htmlspecialchars($receipt['username']); ?></p>
+            <?php
+            $receivedBy = $receipt['received_by_name'] ?? null;
+            if (empty($receivedBy)) {
+                foreach ($items as $it) {
+                    if (!empty($it['received_by_name'])) {
+                        $receivedBy = $it['received_by_name'];
+                        break;
+                    }
+                }
+            }
+            ?>
+            <?php if (!empty($receivedBy)): ?>
+                <p><strong>Received By:</strong> <?php echo htmlspecialchars($receivedBy); ?></p>
+            <?php endif; ?>
         </div>
         <div class="info-section">
             <h3>Receipt Summary</h3>

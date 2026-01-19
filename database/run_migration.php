@@ -94,6 +94,19 @@ if ($conn->query($createReceiptsTable)) {
     $errors[] = "Failed to create/verify stock_receipts table: " . $conn->error;
 }
 
+// Add received_by_name to stock_receipts if missing
+$checkStockReceiptsReceivedBy = $conn->query("SHOW COLUMNS FROM stock_receipts LIKE 'received_by_name'");
+if ($checkStockReceiptsReceivedBy && $checkStockReceiptsReceivedBy->num_rows == 0) {
+    $sql = "ALTER TABLE stock_receipts ADD COLUMN received_by_name VARCHAR(255) DEFAULT NULL";
+    if ($conn->query($sql)) {
+        $success[] = "Added column received_by_name to stock_receipts";
+    } else {
+        $errors[] = "Failed to add received_by_name to stock_receipts: " . $conn->error;
+    }
+} else {
+    $success[] = "Column received_by_name already exists in stock_receipts";
+}
+
 // Add receipt_id to stock_movements if missing
 $checkReceiptIdCol = $conn->query("SHOW COLUMNS FROM stock_movements LIKE 'receipt_id'");
 if ($checkReceiptIdCol->num_rows == 0) {

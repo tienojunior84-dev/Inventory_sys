@@ -53,7 +53,9 @@ $products = getAllProducts();
                                 <?php foreach ($products as $product): ?>
                                     <option value="<?php echo $product['id']; ?>" 
                                             data-price="<?php echo $product['selling_price']; ?>"
-                                            data-stock="<?php echo $product['current_stock']; ?>">
+                                            data-stock="<?php echo $product['current_stock']; ?>"
+                                            data-units-per-bulk="<?php echo $product['units_per_bulk'] ?? ''; ?>"
+                                            data-bulk-label="<?php echo htmlspecialchars($product['bulk_unit_label'] ?? ''); ?>">
                                         <?php echo htmlspecialchars($product['name']); ?> 
                                         (<?php echo htmlspecialchars($product['category']); ?>)
                                     </option>
@@ -67,13 +69,34 @@ $products = getAllProducts();
                     </div>
                     <div class="row">
                         <div class="col-md-6 mb-3">
-                            <label class="form-label required-field">Quantity Sold</label>
-                            <input type="number" class="form-control" name="quantity" id="manual_quantity" required min="1">
+                            <label class="form-label required-field">Sale Mode</label>
+                            <div class="btn-group w-100" role="group">
+                                <input type="radio" class="btn-check" name="sale_mode" id="manual_mode_individual" value="individual" checked>
+                                <label class="btn btn-outline-primary" for="manual_mode_individual">Individual</label>
+
+                                <input type="radio" class="btn-check" name="sale_mode" id="manual_mode_bulk" value="bulk">
+                                <label class="btn btn-outline-primary" for="manual_mode_bulk">Bulk</label>
+                            </div>
+                            <small class="form-text text-muted" id="manual_bulk_hint" style="display:none;">Bulk quantity will be converted to units using Units Per Bulk.</small>
                         </div>
                         <div class="col-md-6 mb-3">
                             <label class="form-label required-field">Unit Price</label>
                             <input type="number" step="0.01" class="form-control" name="unit_price" id="manual_unit_price" required min="0">
                             <small class="form-text text-muted">Default selling price (editable)</small>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6 mb-3" id="manual_qty_units_group">
+                            <label class="form-label required-field">Quantity Sold (Units)</label>
+                            <input type="number" class="form-control" name="quantity" id="manual_quantity" required min="1">
+                        </div>
+                        <div class="col-md-6 mb-3" id="manual_qty_bulk_group" style="display:none;">
+                            <label class="form-label required-field">Quantity Sold (Bulk)</label>
+                            <div class="input-group">
+                                <input type="number" step="0.01" class="form-control" name="bulk_quantity" id="manual_bulk_quantity" min="0.01">
+                                <span class="input-group-text" id="manual_bulk_label">Bulk</span>
+                            </div>
+                            <small class="form-text text-muted" id="manual_bulk_conversion"></small>
                         </div>
                     </div>
                     <div class="row">
@@ -111,15 +134,26 @@ $products = getAllProducts();
                                         <option value="">Select product</option>
                                         <?php foreach ($products as $product): ?>
                                             <option value="<?php echo $product['id']; ?>" 
-                                                    data-price="<?php echo $product['selling_price']; ?>">
+                                                    data-price="<?php echo $product['selling_price']; ?>"
+                                                    data-units-per-bulk="<?php echo $product['units_per_bulk'] ?? ''; ?>"
+                                                    data-bulk-label="<?php echo htmlspecialchars($product['bulk_unit_label'] ?? ''); ?>">
                                                 <?php echo htmlspecialchars($product['name']); ?>
                                             </option>
                                         <?php endforeach; ?>
                                     </select>
                                 </div>
+                                <div class="col-md-2 mb-3">
+                                    <label class="form-label required-field">Mode</label>
+                                    <select class="form-select batch-mode" name="modes[]" required>
+                                        <option value="individual" selected>Individual</option>
+                                        <option value="bulk">Bulk</option>
+                                    </select>
+                                </div>
                                 <div class="col-md-3 mb-3">
-                                    <label class="form-label required-field">Quantity</label>
+                                    <label class="form-label required-field">Quantity (Units)</label>
                                     <input type="number" class="form-control batch-quantity" name="quantities[]" required min="1">
+                                    <input type="hidden" class="batch-bulk-quantity" name="bulk_quantities[]" value="">
+                                    <small class="form-text text-muted batch-bulk-info" style="display:none;"></small>
                                 </div>
                                 <div class="col-md-2 mb-3">
                                     <label class="form-label required-field">Unit Price</label>

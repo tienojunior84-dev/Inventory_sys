@@ -50,8 +50,8 @@ if ($method === 'download_template' || $_GET['action'] === 'download_template') 
     header('Content-Type: text/csv');
     header('Content-Disposition: attachment; filename="sales_template.csv"');
     
-    echo "Product Name,Quantity,Unit Price,Date\n";
-    echo "Example Product,5,15000," . date('Y-m-d') . "\n";
+    echo "Product Name,Sale Mode,Quantity (Units),Bulk Quantity,Unit Price,Date\n";
+    echo "Example Product,individual,5,,15000," . date('Y-m-d') . "\n";
     exit();
 }
 
@@ -59,11 +59,17 @@ if ($method === 'download_template' || $_GET['action'] === 'download_template') 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($method === 'manual') {
         $productId = intval($_POST['product_id'] ?? 0);
+        $saleMode = strtolower(trim($_POST['sale_mode'] ?? 'individual'));
         $quantity = intval($_POST['quantity'] ?? 0);
+        $bulkQuantity = isset($_POST['bulk_quantity']) && $_POST['bulk_quantity'] !== '' ? floatval($_POST['bulk_quantity']) : null;
         $unitPrice = floatval($_POST['unit_price'] ?? 0);
         $saleDate = $_POST['sale_date'] ?? date('Y-m-d');
         
-        if ($productId <= 0 || $quantity <= 0) {
+        if (!in_array($saleMode, ['individual', 'bulk'])) {
+            sendJsonResponse(['success' => false, 'message' => 'Invalid sale mode']);
+        }
+
+        if ($productId <= 0) {
             sendJsonResponse(['success' => false, 'message' => 'Invalid product or quantity']);
         }
         
@@ -74,6 +80,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $product = getProduct($productId);
         if (!$product) {
             sendJsonResponse(['success' => false, 'message' => 'Product not found']);
+        }
+
+        if ($saleMode === 'bulk') {
+            if ($bulkQuantity === null || $bulkQuantity <= 0) {
+                sendJsonResponse(['success' => false, 'message' => 'Bulk quantity must be greater than 0']);
+            }
+            $unitsPerBulk = intval($product['units_per_bulk'] ?? 0);
+            if ($unitsPerBulk <= 0) {
+                sendJsonResponse(['success' => false, 'message' => 'This product has no Units Per Bulk set']);
+            }
+            $quantity = intval(round($bulkQuantity * $unitsPerBulk));
+        } else {
+            if ($quantity <= 0) {
+                sendJsonResponse(['success' => false, 'message' => 'Quantity must be greater than 0']);
+            }
         }
         
         if ($product['current_stock'] < $quantity) {
@@ -86,9 +107,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $totalAmount = $unitPrice * $quantity;
             $userId = getCurrentUserId();
             
+            $checkSaleModeCol = $conn->query("SHOW COLUMNS FROM sales LIKE 'sale_mode'");
+            $hasSaleMode = $checkSaleModeCol && $checkSaleModeCol->num_rows > 0;
+            $checkBulkQtyCol = $conn->query("SHOW COLUMNS FROM sales LIKE 'bulk_quantity'");
+            $hasSalesBulkQty = $checkBulkQtyCol && $checkBulkQtyCol->num_rows > 0;
+
             // Record sale
-            $stmt = $conn->prepare("INSERT INTO sales (product_id, quantity, unit_price, total_amount, sale_date, user_id) VALUES (?, ?, ?, ?, ?, ?)");
-            $stmt->bind_param("iiddsi", $productId, $quantity, $unitPrice, $totalAmount, $saleDate, $userId);
+            if ($hasSaleMode && $hasSalesBulkQty) {
+                $stmt = $conn->prepare("INSERT INTO sales (product_id, quantity, unit_price, total_amount, sale_date, sale_mode, bulk_quantity, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+                $stmt->bind_param("iiddssdi", $productId, $quantity, $unitPrice, $totalAmount, $saleDate, $saleMode, $bulkQuantity, $userId);
+            } else {
+                $stmt = $conn->prepare("INSERT INTO sales (product_id, quantity, unit_price, total_amount, sale_date, user_id) VALUES (?, ?, ?, ?, ?, ?)");
+                $stmt->bind_param("iiddsi", $productId, $quantity, $unitPrice, $totalAmount, $saleDate, $userId);
+            }
             $stmt->execute();
             
             // Update stock
@@ -99,8 +130,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             // Record stock movement
             $movementType = 'out';
-            $stmt = $conn->prepare("INSERT INTO stock_movements (product_id, movement_type, quantity, user_id) VALUES (?, ?, ?, ?)");
-            $stmt->bind_param("isii", $productId, $movementType, $quantity, $userId);
+            $checkBulkColumn = $conn->query("SHOW COLUMNS FROM stock_movements LIKE 'bulk_quantity'");
+            $hasMovementBulk = $checkBulkColumn && $checkBulkColumn->num_rows > 0;
+            if ($hasMovementBulk) {
+                $stmt = $conn->prepare("INSERT INTO stock_movements (product_id, movement_type, quantity, bulk_quantity, user_id) VALUES (?, ?, ?, ?, ?)");
+                $stmt->bind_param("isidi", $productId, $movementType, $quantity, $bulkQuantity, $userId);
+            } else {
+                $stmt = $conn->prepare("INSERT INTO stock_movements (product_id, movement_type, quantity, user_id) VALUES (?, ?, ?, ?)");
+                $stmt->bind_param("isii", $productId, $movementType, $quantity, $userId);
+            }
             $stmt->execute();
             
             $conn->commit();
@@ -114,6 +152,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($method === 'batch') {
         $products = $_POST['products'] ?? [];
         $quantities = $_POST['quantities'] ?? [];
+        $modes = $_POST['modes'] ?? [];
+        $bulkQuantities = $_POST['bulk_quantities'] ?? [];
+        $prices = $_POST['prices'] ?? [];
         $saleDate = $_POST['sale_date'] ?? date('Y-m-d');
         
         if (empty($products) || count($products) !== count($quantities)) {
@@ -127,13 +168,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             
             for ($i = 0; $i < count($products); $i++) {
                 $productId = intval($products[$i]);
-                $quantity = intval($quantities[$i]);
+                $saleMode = strtolower(trim($modes[$i] ?? 'individual'));
+                $quantity = intval($quantities[$i] ?? 0);
+                $bulkQuantity = isset($bulkQuantities[$i]) && $bulkQuantities[$i] !== '' ? floatval($bulkQuantities[$i]) : null;
                 $unitPrice = floatval($prices[$i] ?? 0);
                 
-                if ($productId <= 0 || $quantity <= 0 || $unitPrice <= 0) continue;
+                if ($productId <= 0 || $unitPrice <= 0) continue;
+                if (!in_array($saleMode, ['individual', 'bulk'])) continue;
                 
                 $product = getProduct($productId);
                 if (!$product) continue;
+
+                if ($saleMode === 'bulk') {
+                    $unitsPerBulk = intval($product['units_per_bulk'] ?? 0);
+                    if ($unitsPerBulk <= 0) {
+                        throw new Exception("Bulk mode not configured for {$product['name']}");
+                    }
+                    if ($bulkQuantity === null || $bulkQuantity <= 0) {
+                        throw new Exception("Invalid bulk quantity for {$product['name']}");
+                    }
+                    $quantity = intval(round($bulkQuantity * $unitsPerBulk));
+                } else {
+                    if ($quantity <= 0) continue;
+                }
                 
                 if ($product['current_stock'] < $quantity) {
                     throw new Exception("Insufficient stock for {$product['name']}. Available: {$product['current_stock']}");
@@ -142,8 +199,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $totalAmount = $unitPrice * $quantity;
                 
                 // Record sale
-                $stmt = $conn->prepare("INSERT INTO sales (product_id, quantity, unit_price, total_amount, sale_date, user_id) VALUES (?, ?, ?, ?, ?, ?)");
-                $stmt->bind_param("iiddsi", $productId, $quantity, $unitPrice, $totalAmount, $saleDate, $userId);
+                $checkSaleModeCol = $conn->query("SHOW COLUMNS FROM sales LIKE 'sale_mode'");
+                $hasSaleMode = $checkSaleModeCol && $checkSaleModeCol->num_rows > 0;
+                $checkBulkQtyCol = $conn->query("SHOW COLUMNS FROM sales LIKE 'bulk_quantity'");
+                $hasSalesBulkQty = $checkBulkQtyCol && $checkBulkQtyCol->num_rows > 0;
+                if ($hasSaleMode && $hasSalesBulkQty) {
+                    $stmt = $conn->prepare("INSERT INTO sales (product_id, quantity, unit_price, total_amount, sale_date, sale_mode, bulk_quantity, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+                    $stmt->bind_param("iiddssdi", $productId, $quantity, $unitPrice, $totalAmount, $saleDate, $saleMode, $bulkQuantity, $userId);
+                } else {
+                    $stmt = $conn->prepare("INSERT INTO sales (product_id, quantity, unit_price, total_amount, sale_date, user_id) VALUES (?, ?, ?, ?, ?, ?)");
+                    $stmt->bind_param("iiddsi", $productId, $quantity, $unitPrice, $totalAmount, $saleDate, $userId);
+                }
                 $stmt->execute();
                 
                 // Update stock
@@ -154,8 +220,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 // Record stock movement
                 $movementType = 'out';
-                $stmt = $conn->prepare("INSERT INTO stock_movements (product_id, movement_type, quantity, user_id) VALUES (?, ?, ?, ?)");
-                $stmt->bind_param("isii", $productId, $movementType, $quantity, $userId);
+                $checkBulkColumn = $conn->query("SHOW COLUMNS FROM stock_movements LIKE 'bulk_quantity'");
+                $hasMovementBulk = $checkBulkColumn && $checkBulkColumn->num_rows > 0;
+                if ($hasMovementBulk) {
+                    $stmt = $conn->prepare("INSERT INTO stock_movements (product_id, movement_type, quantity, bulk_quantity, user_id) VALUES (?, ?, ?, ?, ?)");
+                    $stmt->bind_param("isidi", $productId, $movementType, $quantity, $bulkQuantity, $userId);
+                } else {
+                    $stmt = $conn->prepare("INSERT INTO stock_movements (product_id, movement_type, quantity, user_id) VALUES (?, ?, ?, ?)");
+                    $stmt->bind_param("isii", $productId, $movementType, $quantity, $userId);
+                }
                 $stmt->execute();
             }
             
@@ -205,7 +278,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         if ($fileExt === 'csv') {
             $handle = fopen($filePath, 'r');
-            $header = fgetcsv($handle); // Skip header
+            $header = fgetcsv($handle);
+            $headerMap = [];
+            if ($header) {
+                foreach ($header as $idx => $col) {
+                    $key = strtolower(trim($col));
+                    $headerMap[$key] = $idx;
+                }
+            }
             
             $lineNum = 2;
             while (($row = fgetcsv($handle)) !== false) {
@@ -213,11 +293,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $errors[] = "Line $lineNum: Insufficient columns";
                     continue;
                 }
-                
-                $productName = trim($row[0]);
-                $quantity = intval($row[1]);
-                $unitPrice = !empty($row[2]) ? floatval($row[2]) : null;
-                $date = !empty($row[3]) ? trim($row[3]) : date('Y-m-d');
+
+                $productName = trim($row[$headerMap['product name'] ?? 0] ?? '');
+                $saleModeRaw = trim($row[$headerMap['sale mode'] ?? 1] ?? '');
+                $saleMode = $saleModeRaw !== '' ? strtolower($saleModeRaw) : 'individual';
+
+                $quantityColIdx = $headerMap['quantity (units)'] ?? $headerMap['quantity'] ?? 1;
+                $quantity = intval($row[$quantityColIdx] ?? 0);
+
+                $bulkQtyIdx = $headerMap['bulk quantity'] ?? null;
+                $bulkQuantity = ($bulkQtyIdx !== null && ($row[$bulkQtyIdx] ?? '') !== '') ? floatval($row[$bulkQtyIdx]) : null;
+
+                $unitPriceIdx = $headerMap['unit price'] ?? 2;
+                $unitPrice = !empty($row[$unitPriceIdx]) ? floatval($row[$unitPriceIdx]) : null;
+
+                $dateIdx = $headerMap['date'] ?? 3;
+                $date = !empty($row[$dateIdx]) ? trim($row[$dateIdx]) : date('Y-m-d');
                 
                 if (empty($productName)) {
                     $errors[] = "Line $lineNum: Product name is required";
@@ -225,8 +316,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 
                 if ($quantity <= 0) {
-                    $errors[] = "Line $lineNum: Invalid quantity";
-                    continue;
+                    if ($saleMode !== 'bulk') {
+                        $errors[] = "Line $lineNum: Invalid quantity";
+                        continue;
+                    }
                 }
                 
                 // Find product by name
@@ -241,13 +334,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 
                 $product = $result->fetch_assoc();
-                // Use provided price or default to product's selling price
-                $finalPrice = $unitPrice !== null ? $unitPrice : $product['selling_price'];
+                $fullProduct = getProduct($product['id']);
+                if (!$fullProduct) {
+                    $errors[] = "Line $lineNum: Product '$productName' not found";
+                    continue;
+                }
+
+                if (!in_array($saleMode, ['individual', 'bulk'])) {
+                    $errors[] = "Line $lineNum: Invalid sale mode";
+                    continue;
+                }
+
+                if ($saleMode === 'bulk') {
+                    if ($bulkQuantity === null || $bulkQuantity <= 0) {
+                        $errors[] = "Line $lineNum: Invalid bulk quantity";
+                        continue;
+                    }
+                    $unitsPerBulk = intval($fullProduct['units_per_bulk'] ?? 0);
+                    if ($unitsPerBulk <= 0) {
+                        $errors[] = "Line $lineNum: Units Per Bulk not set for '$productName'";
+                        continue;
+                    }
+                    $quantity = intval(round($bulkQuantity * $unitsPerBulk));
+                }
+
+                $finalPrice = $unitPrice !== null ? $unitPrice : ($fullProduct['selling_price'] ?? 0);
                 
                 $salesData[] = [
                     'product_id' => $product['id'],
                     'product_name' => $productName,
                     'quantity' => $quantity,
+                    'sale_mode' => $saleMode,
+                    'bulk_quantity' => $bulkQuantity,
                     'unit_price' => $finalPrice,
                     'date' => $date,
                     'line' => $lineNum
@@ -269,11 +387,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Generate preview HTML
         $previewHtml = '<div class="card"><div class="card-header"><h5>Preview Sales Data</h5></div><div class="card-body">';
         $previewHtml .= '<p>Found ' . count($salesData) . ' valid sales entries</p>';
-        $previewHtml .= '<div class="table-responsive"><table class="table table-sm"><thead><tr><th>Product</th><th>Quantity</th><th>Unit Price</th><th>Total</th><th>Date</th></tr></thead><tbody>';
+        $previewHtml .= '<div class="table-responsive"><table class="table table-sm"><thead><tr><th>Product</th><th>Mode</th><th>Quantity</th><th>Unit Price</th><th>Total</th><th>Date</th></tr></thead><tbody>';
         
         foreach ($salesData as $sale) {
             $total = ($sale['unit_price'] ?? 0) * $sale['quantity'];
             $previewHtml .= '<tr><td>' . htmlspecialchars($sale['product_name']) . '</td>';
+            $previewHtml .= '<td>' . htmlspecialchars($sale['sale_mode'] ?? 'individual') . '</td>';
             $previewHtml .= '<td>' . $sale['quantity'] . '</td>';
             $previewHtml .= '<td>' . formatCurrency($sale['unit_price'] ?? 0) . '</td>';
             $previewHtml .= '<td>' . formatCurrency($total) . '</td>';
@@ -320,8 +439,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $totalAmount = $unitPrice * $sale['quantity'];
                 
                 // Record sale
-                $stmt = $conn->prepare("INSERT INTO sales (product_id, quantity, unit_price, total_amount, sale_date, user_id) VALUES (?, ?, ?, ?, ?, ?)");
-                $stmt->bind_param("iiddsi", $sale['product_id'], $sale['quantity'], $unitPrice, $totalAmount, $sale['date'], $userId);
+                $checkSaleModeCol = $conn->query("SHOW COLUMNS FROM sales LIKE 'sale_mode'");
+                $hasSaleMode = $checkSaleModeCol && $checkSaleModeCol->num_rows > 0;
+                $checkBulkQtyCol = $conn->query("SHOW COLUMNS FROM sales LIKE 'bulk_quantity'");
+                $hasSalesBulkQty = $checkBulkQtyCol && $checkBulkQtyCol->num_rows > 0;
+                if ($hasSaleMode && $hasSalesBulkQty) {
+                    $saleMode = $sale['sale_mode'] ?? 'individual';
+                    $bulkQuantity = $sale['bulk_quantity'] ?? null;
+                    $stmt = $conn->prepare("INSERT INTO sales (product_id, quantity, unit_price, total_amount, sale_date, sale_mode, bulk_quantity, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+                    $stmt->bind_param("iiddssdi", $sale['product_id'], $sale['quantity'], $unitPrice, $totalAmount, $sale['date'], $saleMode, $bulkQuantity, $userId);
+                } else {
+                    $stmt = $conn->prepare("INSERT INTO sales (product_id, quantity, unit_price, total_amount, sale_date, user_id) VALUES (?, ?, ?, ?, ?, ?)");
+                    $stmt->bind_param("iiddsi", $sale['product_id'], $sale['quantity'], $unitPrice, $totalAmount, $sale['date'], $userId);
+                }
                 $stmt->execute();
                 
                 // Update stock
@@ -332,8 +462,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 // Record stock movement
                 $movementType = 'out';
-                $stmt = $conn->prepare("INSERT INTO stock_movements (product_id, movement_type, quantity, user_id) VALUES (?, ?, ?, ?)");
-                $stmt->bind_param("isii", $sale['product_id'], $movementType, $sale['quantity'], $userId);
+                $checkBulkColumn = $conn->query("SHOW COLUMNS FROM stock_movements LIKE 'bulk_quantity'");
+                $hasMovementBulk = $checkBulkColumn && $checkBulkColumn->num_rows > 0;
+                $bulkQuantity = $sale['bulk_quantity'] ?? null;
+                if ($hasMovementBulk) {
+                    $stmt = $conn->prepare("INSERT INTO stock_movements (product_id, movement_type, quantity, bulk_quantity, user_id) VALUES (?, ?, ?, ?, ?)");
+                    $stmt->bind_param("isidi", $sale['product_id'], $movementType, $sale['quantity'], $bulkQuantity, $userId);
+                } else {
+                    $stmt = $conn->prepare("INSERT INTO stock_movements (product_id, movement_type, quantity, user_id) VALUES (?, ?, ?, ?)");
+                    $stmt->bind_param("isii", $sale['product_id'], $movementType, $sale['quantity'], $userId);
+                }
                 $stmt->execute();
             }
             
