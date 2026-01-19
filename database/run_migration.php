@@ -27,7 +27,12 @@ $columnsToAdd = [
     'stock_movements' => [
         'bulk_quantity' => "DECIMAL(10, 2) DEFAULT NULL COMMENT 'Quantity in bulk units'",
         'bulk_cost' => "DECIMAL(10, 2) DEFAULT NULL COMMENT 'Cost per bulk unit'",
-        'receipt_number' => "VARCHAR(50) DEFAULT NULL COMMENT 'Unique receipt number'"
+        'receipt_number' => "VARCHAR(50) DEFAULT NULL COMMENT 'Unique receipt number'",
+        'received_by_name' => "VARCHAR(255) DEFAULT NULL COMMENT 'Optional name of person who received stock'"
+    ],
+    'sales' => [
+        'sale_mode' => "VARCHAR(20) DEFAULT 'individual' COMMENT 'individual or bulk'",
+        'bulk_quantity' => "DECIMAL(10, 2) DEFAULT NULL COMMENT 'Quantity in bulk units when sold in bulk'"
     ]
 ];
 
@@ -92,19 +97,6 @@ if ($conn->query($createReceiptsTable)) {
     $success[] = "Ensured table stock_receipts exists";
 } else {
     $errors[] = "Failed to create/verify stock_receipts table: " . $conn->error;
-}
-
-// Add received_by_name to stock_receipts if missing
-$checkStockReceiptsReceivedBy = $conn->query("SHOW COLUMNS FROM stock_receipts LIKE 'received_by_name'");
-if ($checkStockReceiptsReceivedBy && $checkStockReceiptsReceivedBy->num_rows == 0) {
-    $sql = "ALTER TABLE stock_receipts ADD COLUMN received_by_name VARCHAR(255) DEFAULT NULL";
-    if ($conn->query($sql)) {
-        $success[] = "Added column received_by_name to stock_receipts";
-    } else {
-        $errors[] = "Failed to add received_by_name to stock_receipts: " . $conn->error;
-    }
-} else {
-    $success[] = "Column received_by_name already exists in stock_receipts";
 }
 
 // Add receipt_id to stock_movements if missing
